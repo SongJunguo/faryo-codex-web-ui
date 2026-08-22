@@ -269,6 +269,7 @@ appserver_rollout_source = (root / "apps/owner/local-tmux-owner/appserver_rollou
 appserver_registry_source = (root / "apps/owner/local-tmux-owner/appserver_registry.py").read_text(encoding="utf-8")
 appserver_runtime_source = (root / "apps/owner/local-tmux-owner/appserver_runtime.py").read_text(encoding="utf-8")
 real_appserver_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-real-appserver-streaming.mjs").read_text(encoding="utf-8")
+durable_activity_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-durable-activity.mjs").read_text(encoding="utf-8")
 owner_session_catalog_source = (root / "apps/owner/local-tmux-owner/session_catalog.py").read_text(encoding="utf-8")
 owner_session_launch_source = (root / "apps/owner/local-tmux-owner/session_launch.py").read_text(encoding="utf-8")
 owner_backend_source = "\n".join((
@@ -556,6 +557,7 @@ assert "appserver_rollout.activity_blocks" in owner_server and 'payload_type == 
 assert "mergeMessageBlocks(displayBlocks(), liveBlocks)" in history_controller_source and "if (capture.streaming) return capture" in history_controller_source, "settled history must not replace a live App Server capture"
 assert "appserver-stream-progress" in app and "appserver-stream-progress" in owner_style, "App Server streaming must expose a visible progress state"
 assert "state.activeLengthCount < 2" in real_appserver_browser_source and "state.loadedQuestionMarkers < 2" in real_appserver_browser_source and "state.userBlockCount < 2" in real_appserver_browser_source and "!questionJump.targetUser" in real_appserver_browser_source, "real App Server browser validation must prove incremental roles and a working question jump"
+assert "FARYO_SMOKE_MIN_COMMANDS" in durable_activity_browser_source and "page.reload" in durable_activity_browser_source and "compact-activity-item" in durable_activity_browser_source, "durable activity browser validation must inspect real items after an ordinary reload"
 assert "Keep one identity domain for the lifetime of an App Server" in owner_asgi_read_source and "core.web_conversation_history_page" in owner_asgi_read_source, "active App Server history must not switch to incompatible rollout question keys"
 assert "terminal_target = None if web_managed else self.support.target(session)" in owner_asgi_events_source and "except self.core.OwnerError:\n                    return" in owner_asgi_events_source, "event streams must reject unknown sessions before headers and close cleanly when a session disappears"
 assert "IntersectionObserver" in rich_block_controller_source and "shouldRenderEagerly" in app, "Owner long histories must render rich blocks near the viewport instead of mounting every formula at once"
