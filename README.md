@@ -49,9 +49,9 @@ in tmux as an explicit compatibility mode.
 - **Real answer streaming:** stable item identities, bounded delta batching,
   cursor replay and snapshot recovery show the answer while Codex is producing
   it, then converge in place to the durable rollout without duplicate blocks.
-- **Quiet activity trace:** private reasoning placeholders stay hidden, while
-  commands, searches and edits collapse into one inspectable Activity card per
-  turn instead of flooding the conversation.
+- **Durable, quiet activity trace:** private reasoning placeholders stay hidden,
+  while commands, searches and edits survive Owner reconnects and collapse into
+  one inspectable Activity card per turn instead of flooding the conversation.
 - **Long-conversation navigation:** structured history stays bounded, and a
   fast-scroll question rail jumps between prior user turns.
 - **Mobile immersive reading:** installable standalone PWA plus an explicit,
@@ -112,7 +112,7 @@ upstream compatibility, but they are not part of this project's current validati
 or support claims.
 
 Current source line and latest tagged source release: **[Faryo
-1.10.2](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.2)**.
+1.10.3](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.3)**.
 
 ## Current Functionality
 
@@ -123,10 +123,11 @@ Current source line and latest tagged source release: **[Faryo
 - Renders App Server user, assistant and plan items as distinct keyed blocks.
   One live working/receiving state accompanies incremental answer text; empty
   reasoning placeholders are omitted, and tool activity is grouped by turn in
-  a default-collapsed, inspectable card.
+  a default-collapsed, inspectable card whose title reports command, edit and
+  search counts.
 - Treats Codex rollout JSONL as the durable final source. An Owner restart can
-  reconnect to the independent App Server service and recover the active turn
-  without inventing a second message database.
+  reconnect to the independent App Server service and recover both conversation
+  messages and bounded tool activity without inventing a second message database.
 - Keeps Codex TUI threads in tmux as a compatibility backend; tmux capture remains
   conservative live evidence and never becomes a competing writer.
 - Keeps the initial payload to at most 12 recent complete turns, then exposes
@@ -383,7 +384,7 @@ initial allowed workspace:
 
 ```bash
 sha256sum --check install-faryo.sh.sha256
-bash install-faryo.sh --version v1.10.2 --workspace "$PWD"
+bash install-faryo.sh --version v1.10.3 --workspace "$PWD"
 ```
 
 Upgrading a pre-v1.5 checkout that still uses the dedicated Owner keepalive

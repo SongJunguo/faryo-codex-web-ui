@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from typing import Any, Callable, Mapping
 
 from appserver_session import browser_turn_key, message_block
@@ -10,6 +11,7 @@ import codex_history
 
 
 PUBLIC_BLOCK_KINDS = {"user", "output", "process", "plan"}
+_PROCESS_EXIT_RE = re.compile(r"\s+·\s+exit\s+-?\d+$", re.I)
 
 
 def _public_block(value: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -43,6 +45,7 @@ def _public_block(value: Mapping[str, Any]) -> dict[str, Any] | None:
 def _project_message_blocks(
     values: list[Mapping[str, Any]],
     preview_chars: int,
+    durable_activity: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
@@ -55,9 +58,17 @@ def _project_message_blocks(
             grouped[turn_key] = []
             order.append(turn_key)
         grouped[turn_key].append(block)
+    durable_grouped: dict[str, list[dict[str, Any]]] = {}
+    for value in durable_activity or []:
+        block = _public_block(value)
+        if block is None or block["kind"] != "process":
+            continue
+        turn_key = str(block["turnKey"])
+        if turn_key in grouped:
+            durable_grouped.setdefault(turn_key, []).append(block)
     projected: list[dict[str, Any]] = []
     for turn_key in order:
-        blocks = grouped[turn_key]
+        blocks = _merge_turn_activity(grouped[turn_key], durable_grouped.get(turn_key, []))
         text = _turn_text(blocks)
         question = next(
             (str(block["text"]) for block in blocks if block["kind"] == "user"),
@@ -72,6 +83,59 @@ def _project_message_blocks(
                 "blocks": blocks,
             })
     return projected
+
+
+def _process_fingerprint(block: Mapping[str, Any]) -> str:
+    text = " ".join(str(block.get("text") or "").split())
+    text = _PROCESS_EXIT_RE.sub("", text)
+    if text.startswith("Running "):
+        text = "Ran " + text[len("Running "):]
+    return text
+
+
+def _merge_turn_activity(
+    current: list[dict[str, Any]],
+    durable: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Restore durable activity once while retaining richer live revisions."""
+
+    if not durable:
+        return current
+    live_process = [block for block in current if block["kind"] == "process"]
+    live_by_id = {str(block["id"]): block for block in live_process}
+    live_by_fingerprint: dict[str, list[dict[str, Any]]] = {}
+    for block in live_process:
+        live_by_fingerprint.setdefault(_process_fingerprint(block), []).append(block)
+    merged_process: list[dict[str, Any]] = []
+    used_ids: set[str] = set()
+    for durable_block in durable:
+        item_id = str(durable_block["id"])
+        live = live_by_id.get(item_id)
+        if live is None:
+            fingerprint = _process_fingerprint(durable_block)
+            candidates = live_by_fingerprint.get(fingerprint, [])
+            live = next(
+                (candidate for candidate in candidates if str(candidate["id"]) not in used_ids),
+                None,
+            )
+        selected = live or durable_block
+        merged_process.append(selected)
+        if live is not None:
+            used_ids.add(str(live["id"]))
+    merged_process.extend(block for block in live_process if str(block["id"]) not in used_ids)
+
+    first_process = next(
+        (index for index, block in enumerate(current) if block["kind"] == "process"),
+        None,
+    )
+    if first_process is None:
+        first_process = next(
+            (index for index, block in enumerate(current) if block["kind"] == "output"),
+            len(current),
+        )
+    before = [block for block in current[:first_process] if block["kind"] != "process"]
+    after = [block for block in current[first_process:] if block["kind"] != "process"]
+    return [*before, *merged_process, *after]
 
 
 def _turn_blocks(turn: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -120,6 +184,7 @@ def conversation_history_page(
     *,
     thread_id: str,
     message_blocks: list[Mapping[str, Any]] | None = None,
+    durable_activity: list[Mapping[str, Any]] | None = None,
     limit: int,
     cursor: str = "",
     around: int | None = None,
@@ -129,7 +194,7 @@ def conversation_history_page(
     updated_at: Callable[[], str],
 ) -> dict[str, Any]:
     structured_values = [item for item in (message_blocks or []) if isinstance(item, Mapping)]
-    projected = _project_message_blocks(structured_values, preview_chars)
+    projected = _project_message_blocks(structured_values, preview_chars, durable_activity)
     if not projected:
         for raw_turn in snapshot.get("turns") or []:
             if not isinstance(raw_turn, Mapping):

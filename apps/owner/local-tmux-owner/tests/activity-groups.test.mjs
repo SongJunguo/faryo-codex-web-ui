@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   activityItemCollapsible,
+  activityGroupSummary,
   activityItemSummary,
   groupActivityBlocks,
   isReasoningPlaceholder,
@@ -45,9 +46,21 @@ test("reasoning placeholders disappear and each turn gets one activity card", ()
     grouped.map((item) => item.kind),
     ["user", "activity", "output", "user", "activity", "output"],
   );
-  assert.equal(grouped[1].summary, "Activity · 2 steps");
+  assert.equal(grouped[1].summary, "Activity · 1 command · 1 search");
   assert.equal(grouped[1].items.length, 2);
-  assert.equal(grouped[4].summary, "Activity · 1 step");
+  assert.equal(grouped[4].summary, "Activity · 1 edit");
+});
+
+test("collapsed activity titles expose what history contains", () => {
+  assert.equal(
+    activityGroupSummary([
+      { text: "Ran git status" },
+      { text: "Ran npm test" },
+      { text: "Edited app.py" },
+      { text: "Searched current docs" },
+    ]),
+    "Activity · 2 commands · 1 edit · 1 search",
+  );
 });
 
 test("long command details default to a concise label", () => {

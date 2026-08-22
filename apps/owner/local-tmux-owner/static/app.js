@@ -1882,6 +1882,7 @@
     summary.className = 'compact-activity-title';
     const label = document.createElement('span');
     label.textContent = String(model.summary || 'Activity');
+    label.title = label.textContent;
     summary.appendChild(label);
 
     const list = document.createElement('div');

@@ -265,6 +265,7 @@ owner_asgi_runner = (root / "apps/owner/local-tmux-owner/run_owner_asgi.py").rea
 appserver_commands_source = (root / "apps/owner/local-tmux-owner/appserver_commands.py").read_text(encoding="utf-8")
 appserver_session_source = (root / "apps/owner/local-tmux-owner/appserver_session.py").read_text(encoding="utf-8")
 appserver_history_source = (root / "apps/owner/local-tmux-owner/appserver_history.py").read_text(encoding="utf-8")
+appserver_rollout_source = (root / "apps/owner/local-tmux-owner/appserver_rollout.py").read_text(encoding="utf-8")
 appserver_registry_source = (root / "apps/owner/local-tmux-owner/appserver_registry.py").read_text(encoding="utf-8")
 appserver_runtime_source = (root / "apps/owner/local-tmux-owner/appserver_runtime.py").read_text(encoding="utf-8")
 real_appserver_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-real-appserver-streaming.mjs").read_text(encoding="utf-8")
@@ -511,7 +512,7 @@ for owner_module in (
 ):
     assert f"ownerModule('{owner_module}')" in app, f"Owner module is not revisioned: {owner_module}"
 assert "createStatusController" in app and "acceptScope" in status_controller_source and "refreshRunId" in status_controller_source, "Owner status projection must reject stale session responses"
-assert "groupActivityBlocks" in app and "isReasoningPlaceholder" in activity_groups_source and "compact-activity-card" in owner_style, "App Server activity must suppress empty reasoning and collapse tool steps by turn"
+assert "groupActivityBlocks" in app and "isReasoningPlaceholder" in activity_groups_source and "activityGroupSummary" in activity_groups_source and "compact-activity-card" in owner_style, "App Server activity must suppress empty reasoning and expose collapsed tool summaries by turn"
 assert "statusRefreshRunId" not in app and "activeStatusRefreshController" not in app, "status request ownership must not return to app.js"
 assert "/api/workspace-changes" in owner_asgi_read_source and "/api/workspace-changes" in changes_panel_source, "workspace changes must use the scoped read-only Owner API"
 assert "/api/capabilities" in owner_asgi_read_source and "/api/diagnostics" in owner_asgi_read_source and "loadOwnerCapabilities" in app, "Owner must expose versioned redacted diagnostics"
@@ -551,6 +552,7 @@ assert 'promptInput.addEventListener("paste"' in attachment_controller_source, "
 assert "MAX_ATTACHMENTS = 35" in app and "uploadConcurrency: 4" in app, "Owner must bound 35-file attachment batches to four concurrent uploads"
 assert "olderLoadQueued" in history_controller_source and "function emptyConversationHistory(" not in app, "Owner paged history state must remain in its controller"
 assert '"messageBlocks"' in owner_server and "def message_blocks(" in appserver_session_source and "def _project_message_blocks(" in appserver_history_source and "message_blocks=[" in owner_server and '"blocks": list(item["blocks"])' in appserver_history_source, "App Server roles must stay structured and grouped by turn through capture and history"
+assert "appserver_rollout.activity_blocks" in owner_server and 'payload_type == "custom_tool_call"' in appserver_rollout_source and 'payload_type == "patch_apply_end"' in appserver_rollout_source and "durable_activity=durable_activity" in owner_server, "App Server history must recover durable command and file activity after reconnects"
 assert "mergeMessageBlocks(displayBlocks(), liveBlocks)" in history_controller_source and "if (capture.streaming) return capture" in history_controller_source, "settled history must not replace a live App Server capture"
 assert "appserver-stream-progress" in app and "appserver-stream-progress" in owner_style, "App Server streaming must expose a visible progress state"
 assert "state.activeLengthCount < 2" in real_appserver_browser_source and "state.loadedQuestionMarkers < 2" in real_appserver_browser_source and "state.userBlockCount < 2" in real_appserver_browser_source and "!questionJump.targetUser" in real_appserver_browser_source, "real App Server browser validation must prove incremental roles and a working question jump"

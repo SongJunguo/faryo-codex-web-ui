@@ -4,6 +4,7 @@ import asyncio
 import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 APP_DIR = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ if str(APP_DIR) not in sys.path:
 from appserver_events import EventJournal
 from appserver_capabilities import inspect_schema_directory
 from appserver_history import conversation_history_page
+from appserver_rollout import activity_blocks, clear_activity_index_cache
 from appserver_protocol import (
     AppServerProtocolError,
     AppServerUnavailable,
@@ -55,6 +57,9 @@ class FakeSocket:
 
 
 class ProtocolTest(unittest.TestCase):
+    def tearDown(self) -> None:
+        clear_activity_index_cache()
+
     def test_classifies_all_bidirectional_shapes(self) -> None:
         self.assertEqual(decode_wire_message('{"id":1,"result":{}}').kind, ProtocolMessageKind.RESPONSE)
         self.assertEqual(
@@ -257,6 +262,202 @@ class ProtocolTest(unittest.TestCase):
             structured["turns"][0]["blocks"][0]["questionKey"],
             structured["questions"][0]["key"],
         )
+
+    def test_rollout_restores_commands_searches_and_file_changes_by_turn(self) -> None:
+        turn_id = "turn_anonymous"
+        metadata = {"turn_id": turn_id, "create_time": 1}
+        events = [
+            {
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": turn_id},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "id": "command_anonymous",
+                    "call_id": "call_command",
+                    "status": "completed",
+                    "input": "const result = await tools.exec_command({cmd: 'git status'}); text(result.output);",
+                    "internal_chat_message_metadata_passthrough": metadata,
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "id": "web_wrapper_anonymous",
+                    "call_id": "call_web",
+                    "status": "completed",
+                    "input": "const result = await tools.web__run({search_query:[{q:'example'}]}); text(result);",
+                    "internal_chat_message_metadata_passthrough": metadata,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "web_search_end",
+                    "call_id": "search_anonymous",
+                    "query": "anonymous documentation",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "name": "exec",
+                    "id": "patch_wrapper_anonymous",
+                    "call_id": "call_patch",
+                    "status": "completed",
+                    "input": "await tools.apply_patch('anonymous patch');",
+                    "internal_chat_message_metadata_passthrough": metadata,
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "patch_apply_end",
+                    "call_id": "patch_anonymous",
+                    "turn_id": turn_id,
+                    "success": True,
+                    "changes": {
+                        "/workspace/src/app.py": {
+                            "type": "update",
+                            "unified_diff": "@@ -1 +1 @@\n-old\n+new\n",
+                        },
+                    },
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {"type": "reasoning", "text": "private reasoning"},
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "task_complete", "turn_id": turn_id},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            rollout = Path(root) / "rollout-anonymous.jsonl"
+            rollout.write_text(
+                "".join(json.dumps(event) + "\n" for event in events),
+                encoding="utf-8",
+            )
+            blocks = activity_blocks(str(rollout), [turn_id])
+
+        self.assertEqual([block["kind"] for block in blocks], ["process", "process", "process"])
+        self.assertTrue(blocks[0]["text"].startswith("Ran const result = await tools.exec_command"))
+        self.assertEqual(blocks[1]["text"], "Searched anonymous documentation")
+        self.assertEqual(blocks[2]["text"], "Edited app.py")
+        self.assertNotIn("private reasoning", "\n".join(block["text"] for block in blocks))
+        self.assertTrue(all(block["turnKey"].startswith("appserver-turn-") for block in blocks))
+        self.assertTrue(all(block["id"].startswith("appserver-item-") for block in blocks))
+
+    def test_rollout_activity_index_waits_for_complete_records_and_catches_up(self) -> None:
+        event = {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "id": "command_incremental",
+                "status": "completed",
+                "input": "await tools.exec_command({cmd: 'true'});",
+                "internal_chat_message_metadata_passthrough": {"turn_id": "turn_incremental"},
+            },
+        }
+        encoded = json.dumps(event).encode("utf-8")
+        with tempfile.TemporaryDirectory() as root:
+            rollout = Path(root) / "rollout-incremental.jsonl"
+            rollout.write_bytes(encoded)
+            self.assertEqual(activity_blocks(str(rollout), ["turn_incremental"]), [])
+            with rollout.open("ab") as handle:
+                handle.write(b"\n")
+            blocks = activity_blocks(str(rollout), ["turn_incremental"])
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("tools.exec_command", blocks[0]["text"])
+
+    def test_history_merges_durable_activity_once_and_keeps_live_exit_status(self) -> None:
+        turn_key = "appserver-turn-anonymous"
+        options = {
+            "thread_id": "thread_anonymous",
+            "limit": 12,
+            "max_page_turns": 24,
+            "page_char_budget": 100_000,
+            "preview_chars": 80,
+            "updated_at": lambda: "now",
+        }
+        history = conversation_history_page(
+            {"turns": []},
+            message_blocks=[
+                {
+                    "id": "user-anonymous",
+                    "turnKey": turn_key,
+                    "kind": "user",
+                    "role": "user",
+                    "text": "Anonymous question",
+                    "final": True,
+                },
+                {
+                    "id": "command-live",
+                    "turnKey": turn_key,
+                    "kind": "process",
+                    "role": "process",
+                    "text": "Ran git status · exit 0",
+                    "final": True,
+                },
+                {
+                    "id": "search-same-id",
+                    "turnKey": turn_key,
+                    "kind": "process",
+                    "role": "process",
+                    "text": "Searched anonymous docs",
+                    "final": True,
+                },
+                {
+                    "id": "answer-anonymous",
+                    "turnKey": turn_key,
+                    "kind": "output",
+                    "role": "assistant",
+                    "text": "Anonymous answer",
+                    "final": True,
+                },
+            ],
+            durable_activity=[
+                {
+                    "id": "command-durable",
+                    "turnKey": turn_key,
+                    "kind": "process",
+                    "role": "process",
+                    "text": "Ran git status",
+                    "final": True,
+                },
+                {
+                    "id": "search-same-id",
+                    "turnKey": turn_key,
+                    "kind": "process",
+                    "role": "process",
+                    "text": "Searched anonymous docs",
+                    "final": True,
+                },
+                {
+                    "id": "edit-durable",
+                    "turnKey": turn_key,
+                    "kind": "process",
+                    "role": "process",
+                    "text": "Edited app.py",
+                    "final": True,
+                },
+            ],
+            **options,
+        )
+        blocks = history["turns"][0]["blocks"]
+        self.assertEqual([block["kind"] for block in blocks], ["user", "process", "process", "process", "output"])
+        self.assertEqual(sum(block["text"].startswith("Ran git status") for block in blocks), 1)
+        self.assertIn("Ran git status · exit 0", [block["text"] for block in blocks])
+        self.assertEqual(sum(block["text"] == "Searched anonymous docs" for block in blocks), 1)
+        self.assertIn("Edited app.py", [block["text"] for block in blocks])
 
 
 class TransportTest(unittest.IsolatedAsyncioTestCase):

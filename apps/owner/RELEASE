@@ -1,4 +1,4 @@
 repo=faryo/apps/owner
-version=v1.10.2
+version=v1.10.3
 role=endpoint-runtime
 package=faryo

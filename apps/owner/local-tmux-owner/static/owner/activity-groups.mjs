@@ -27,6 +27,28 @@ export function activityItemSummary(text, index = 0) {
   return value.length <= 96 ? value : `${value.slice(0, 95)}…`;
 }
 
+export function activityGroupSummary(items) {
+  const counts = { commands: 0, edits: 0, searches: 0, tools: 0, other: 0 };
+  for (const item of Array.isArray(items) ? items : []) {
+    const text = String(item?.text || "").trim();
+    if (/^(?:Ran|Running)\b/iu.test(text)) counts.commands += 1;
+    else if (/^(?:Edited|Editing)\b/iu.test(text)) counts.edits += 1;
+    else if (/^(?:Searched|Searching the web)\b/iu.test(text)) counts.searches += 1;
+    else if (/^(?:Called|Calling)\b/iu.test(text)) counts.tools += 1;
+    else counts.other += 1;
+  }
+  const labels = [
+    ["command", "commands", counts.commands],
+    ["edit", "edits", counts.edits],
+    ["search", "searches", counts.searches],
+    ["tool", "tools", counts.tools],
+    ["step", "steps", counts.other],
+  ]
+    .filter(([_one, _many, count]) => count > 0)
+    .map(([one, many, count]) => `${count} ${count === 1 ? one : many}`);
+  return labels.length ? `Activity · ${labels.join(" · ")}` : "Activity";
+}
+
 export function groupActivityBlocks(value) {
   const source = Array.isArray(value) ? value : [];
   const result = [];
@@ -75,8 +97,7 @@ export function groupActivityBlocks(value) {
 
   for (const group of groups.values()) {
     group.text = group.items.map((item) => item.text).join("\n\n");
-    const count = group.items.length;
-    group.summary = `Activity · ${count} ${count === 1 ? "step" : "steps"}`;
+    group.summary = activityGroupSummary(group.items);
   }
   return result;
 }

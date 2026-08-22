@@ -102,6 +102,7 @@ main { grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 1; min-widt
 .compact-status-line { font-size: calc(12px + var(--font-step)); }
 .compact-activity-card { align-self: flex-start; width: min(100%, 720px); border: 1px solid var(--line); border-radius: 11px; background: color-mix(in srgb, var(--panel2) 72%, transparent); color: var(--muted); overflow: hidden; }
 .compact-activity-title { min-height: 38px; display: flex; align-items: center; gap: 8px; padding: 7px 10px; cursor: pointer; list-style: none; user-select: none; font-size: calc(12px + var(--font-step)); font-weight: 700; }
+.compact-activity-title > span { min-width: 0; overflow-wrap: anywhere; }
 .compact-activity-title::-webkit-details-marker { display: none; }
 .compact-activity-title::after { content: "›"; margin-left: auto; font-size: 17px; line-height: 1; transform: rotate(0); transition: transform .16s ease; }
 .compact-activity-card[open] > .compact-activity-title { border-bottom: 1px solid var(--line); }

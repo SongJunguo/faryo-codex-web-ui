@@ -54,10 +54,10 @@ Review and verify the script before executing it:
 ```bash
 sha256sum --check install-faryo.sh.sha256
 less install-faryo.sh
-bash install-faryo.sh --version v1.10.2 --workspace /path/to/workspace
+bash install-faryo.sh --version v1.10.3 --workspace /path/to/workspace
 ```
 
-The script then downloads `faryo-v1.10.2.tar.gz` and its checksum, accepts only a
+The script then downloads `faryo-v1.10.3.tar.gz` and its checksum, accepts only a
 bounded single-root regular-file archive, and invokes the same `faryo install`
 path used by source developers. It does not execute sudo, install apt packages,
 create a tunnel, or change Cloudflare settings.
@@ -71,7 +71,7 @@ When upgrading a pre-v1.5 deployment that still has the dedicated
 supervisor migration:
 
 ```bash
-bash install-faryo.sh --version v1.10.2 --workspace /path/to/workspace --migrate-owner
+bash install-faryo.sh --version v1.10.3 --workspace /path/to/workspace --migrate-owner
 ```
 
 The migration records and compares every existing agent tmux geometry. It stops
@@ -169,7 +169,7 @@ tokens, session names, prompts, and conversation content.
 
 ```bash
 faryo update                    # latest stable release
-faryo update --version v1.10.2  # exact release
+faryo update --version v1.10.3  # exact release
 faryo rollback                  # previous healthy installed version
 ```
 
@@ -182,9 +182,9 @@ previous services. It never rolls back private conversation or attachment data.
 For a reviewed offline asset:
 
 ```bash
-faryo update --version v1.10.2 \
-  --archive ./faryo-v1.10.2.tar.gz \
-  --checksum ./faryo-v1.10.2.tar.gz.sha256
+faryo update --version v1.10.3 \
+  --archive ./faryo-v1.10.3.tar.gz \
+  --checksum ./faryo-v1.10.3.tar.gz.sha256
 ```
 
 ## Uninstall

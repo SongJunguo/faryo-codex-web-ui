@@ -41,6 +41,7 @@ import codex_history
 import codex_app_server
 import appserver_runtime
 import appserver_history
+import appserver_rollout
 import session_catalog
 import session_launch
 import codex_tui_interactions
@@ -1757,15 +1758,27 @@ def web_conversation_history_page(
 ) -> dict[str, Any]:
     record = capture.get("record") if isinstance(capture.get("record"), dict) else {}
     snapshot = capture.get("snapshot") if isinstance(capture.get("snapshot"), dict) else {}
+    thread_id = str(record.get("threadId") or "")
+    durable_activity: list[dict[str, Any]] = []
+    thread = codex_thread_by_id(thread_id) if thread_id else None
+    history_path = str(thread.get("rollout_path") or "") if thread else ""
+    if history_path and rollout_thread_id_from_path(history_path) == thread_id:
+        turn_ids = [
+            str(turn.get("id") or "")
+            for turn in (snapshot.get("turns") or [])
+            if isinstance(turn, dict) and turn.get("id")
+        ]
+        durable_activity = appserver_rollout.activity_blocks(history_path, turn_ids)
     try:
         return appserver_history.conversation_history_page(
             snapshot,
-            thread_id=str(record.get("threadId") or ""),
+            thread_id=thread_id,
             message_blocks=[
                 item
                 for item in (capture.get("messageBlocks") or [])
                 if isinstance(item, dict)
             ],
+            durable_activity=durable_activity,
             limit=limit,
             cursor=cursor,
             around=around,

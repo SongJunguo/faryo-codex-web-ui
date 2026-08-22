@@ -375,6 +375,26 @@ class OwnerAsgiTest(unittest.TestCase):
                 "codex_thread_by_id",
                 return_value={"rollout_path": "/private/authoritative.jsonl"},
             ) as rollout_lookup,
+            mock.patch.object(
+                server,
+                "rollout_thread_id_from_path",
+                return_value="thread_demo",
+            ),
+            mock.patch.object(
+                server.appserver_rollout,
+                "activity_blocks",
+                return_value=[
+                    {
+                        "id": "appserver-item-command",
+                        "turnKey": "appserver-turn-demo",
+                        "kind": "process",
+                        "role": "process",
+                        "text": "Ran anonymous check",
+                        "revision": 0,
+                        "final": True,
+                    },
+                ],
+            ) as activity_lookup,
         ):
             status, _headers, body = self.request(
                 "GET",
@@ -386,9 +406,10 @@ class OwnerAsgiTest(unittest.TestCase):
         blocks = payload["turns"][0]["blocks"]
         self.assertEqual(status, 200)
         self.assertEqual(payload["source"], "codex-app-server")
-        self.assertEqual([block["role"] for block in blocks], ["user", "assistant"])
+        self.assertEqual([block["role"] for block in blocks], ["user", "process", "assistant"])
         self.assertEqual(blocks[0]["questionKey"], payload["questions"][0]["key"])
-        rollout_lookup.assert_not_called()
+        rollout_lookup.assert_called_once_with("thread_demo")
+        activity_lookup.assert_called_once_with("/private/authoritative.jsonl", ["turn_demo"])
 
     def test_resume_can_switch_from_app_server_history_to_tui(self) -> None:
         with (
