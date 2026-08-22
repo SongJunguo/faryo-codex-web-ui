@@ -5,6 +5,11 @@
 
 ## Active
 
+- [`v1.11-command-and-tool-timeline-plan.md`](v1.11-command-and-tool-timeline-plan.md)：
+  把 `/rename`、`/model`、`/fast`、`/permissions` 和 Goal 等本地会话命令建模为不进入
+  模型上下文、可在刷新后恢复的 command lifecycle；同时把 command execution、文件修改、
+  search、MCP 和未知工具从有损文本升级为 typed activity、默认折叠分组和按需安全详情。
+
 - [`v1.10-release-and-maintainability-plan.md`](v1.10-release-and-maintainability-plan.md)：
   在已补齐 1.9.1 公开发布断层后，继续收敛 Owner/前端 composition root；让 New/Resume
   显式选择 Codex App Server 或 Codex TUI (tmux)，建立版本感知命令能力、状态代际隔离、

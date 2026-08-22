@@ -46,6 +46,7 @@ class FakeRuntime:
         self.registry = FakeRegistry()
         self.sent = []
         self.resumed = []
+        self.detail_items = []
 
     def start(self):
         self.started = True
@@ -91,6 +92,24 @@ class FakeRuntime:
                 "rateLimits": {},
             },
             "messages": [],
+            "messageBlocks": [],
+            "commandEvents": [],
+        }
+
+    def activity_detail(self, name, item_id):
+        if name not in self.sessions:
+            raise RuntimeError("missing")
+        self.detail_items.append((name, item_id))
+        return {
+            "item": item_id,
+            "detail": {
+                "type": "command",
+                "status": "completed",
+                "title": "anonymous command",
+                "command": "printf anonymous",
+                "output": "anonymous output",
+                "truncated": False,
+            },
         }
 
     def resume_session(self, **values):
@@ -251,6 +270,16 @@ class OwnerAsgiTest(unittest.TestCase):
             self.assertEqual(status, 200, path)
             self.assertEqual(headers.get("cache-control"), "no-store", path)
             self.assertTrue(json.loads(body)["ok"], path)
+
+        status, headers, body = self.request(
+            "GET",
+            "/api/activity-detail?session=faryo1&item=appserver-item-0123456789abcdef",
+            token=True,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get("cache-control"), "no-store")
+        self.assertEqual(json.loads(body)["detail"]["output"], "anonymous output")
+        self.assertEqual(self.runtime.detail_items, [("faryo1", "appserver-item-0123456789abcdef")])
 
         status, _headers, body = self.request(
             "POST",

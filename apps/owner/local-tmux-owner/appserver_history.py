@@ -11,7 +11,30 @@ import codex_history
 
 
 PUBLIC_BLOCK_KINDS = {"user", "output", "process", "plan"}
+PUBLIC_ACTIVITY_TYPES = {"command", "file_change", "search", "mcp", "tool", "image", "compaction", "error", "unknown"}
+PUBLIC_ACTIVITY_STATUSES = {"running", "waiting", "completed", "failed", "declined"}
 _PROCESS_EXIT_RE = re.compile(r"\s+·\s+exit\s+-?\d+$", re.I)
+
+
+def _public_activity(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping):
+        return None
+    activity_type = str(value.get("type") or "")
+    status = str(value.get("status") or "")
+    if activity_type not in PUBLIC_ACTIVITY_TYPES or status not in PUBLIC_ACTIVITY_STATUSES:
+        return None
+    result: dict[str, Any] = {
+        "type": activity_type,
+        "status": status,
+        "title": str(value.get("title") or "")[:520],
+        "summary": str(value.get("summary") or "")[:360],
+        "detailKind": str(value.get("detailKind") or "none")[:48],
+        "detailAvailable": bool(value.get("detailAvailable")),
+    }
+    for key in ("exitCode", "durationMs", "changeCount"):
+        if isinstance(value.get(key), (int, float)):
+            result[key] = int(value[key])
+    return result
 
 
 def _public_block(value: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -39,6 +62,10 @@ def _public_block(value: Mapping[str, Any]) -> dict[str, Any] | None:
     }
     if kind == "user":
         block["questionKey"] = turn_key
+    elif kind == "process":
+        activity = _public_activity(value.get("activity"))
+        if activity is not None:
+            block["activity"] = activity
     return block
 
 
@@ -86,6 +113,9 @@ def _project_message_blocks(
 
 
 def _process_fingerprint(block: Mapping[str, Any]) -> str:
+    activity = _public_activity(block.get("activity"))
+    if activity is not None:
+        return "\0".join((str(activity["type"]), str(activity["title"])))
     text = " ".join(str(block.get("text") or "").split())
     text = _PROCESS_EXIT_RE.sub("", text)
     if text.startswith("Running "):

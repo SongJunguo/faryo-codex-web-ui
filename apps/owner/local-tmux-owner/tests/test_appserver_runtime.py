@@ -472,13 +472,16 @@ class RuntimeTest(unittest.TestCase):
                 client_request_id="command_model_1",
             )
             interaction = opened["interaction"]
+            self.assertEqual(opened["commandEvent"]["status"], "waiting")
             model_b = next(option for option in interaction["options"] if option["label"] == "Model B")
-            runtime.respond_interaction(
+            model_response = runtime.respond_interaction(
                 session,
                 interaction_id=interaction["id"],
                 option_id=model_b["id"],
                 client_request_id="command_model_response_1",
             )
+            self.assertEqual(model_response["commandEvent"]["status"], "completed")
+            self.assertIn("Model B", model_response["commandEvent"]["summary"])
             self.assertEqual(runtime.capture(session)["snapshot"]["thread"]["model"], "model-b")
 
             runtime.begin_command(session, command="/fast", client_request_id="command_fast_1")
@@ -499,11 +502,14 @@ class RuntimeTest(unittest.TestCase):
                 option_id=close["id"],
                 client_request_id="command_usage_response_1",
             )
+            events = runtime.capture(session)["commandEvents"]
             runtime.stop()
 
         settings_calls = [params for method, params in clients[0].rpc_calls if method == "thread/settings/update"]
         self.assertTrue(any(params.get("model") == "model-b" for params in settings_calls))
         self.assertEqual(sum(params.get("serviceTier") == "fast" for params in settings_calls), 1)
+        self.assertEqual([event["name"] for event in events], ["/model", "/fast"])
+        self.assertEqual([event["status"] for event in events], ["completed", "completed"])
 
 
 if __name__ == "__main__":

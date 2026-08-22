@@ -32,18 +32,34 @@ class InteractionService:
         runtime: Any,
         detector: Callable[[str], DetectedInteraction | None],
         *,
+        command_timeline: Any | None = None,
         transition_timeout: float = 2.2,
         poll_interval: float = 0.05,
         receipt_ttl: float = 48 * 60 * 60,
     ) -> None:
         self.runtime = runtime
         self.detector = detector
+        self.command_timeline = command_timeline
         self.transition_timeout = transition_timeout
         self.poll_interval = poll_interval
         self.receipt_ttl = receipt_ttl
         self.lock = threading.RLock()
         self.session_states: dict[str, dict[str, Any]] = {}
         self.receipts: dict[str, dict[str, Any]] = {}
+
+    def _command_owner_key(self, config: Any) -> str:
+        resolver = getattr(self.runtime, "command_owner_key", None)
+        if callable(resolver):
+            value = str(resolver(config) or "").strip()
+            if value:
+                return value
+        return f"tui:{config.session}"
+
+    def _timeline_public(self, event: dict[str, Any] | None) -> dict[str, Any] | None:
+        if event is None or self.command_timeline is None:
+            return None
+        projector = getattr(self.command_timeline, "public_event", None)
+        return projector(event) if callable(projector) else None
 
     def _now(self) -> float:
         monotonic = getattr(self.runtime, "monotonic", None)
@@ -297,6 +313,12 @@ class InteractionService:
             if existing := self._existing_receipt(request_id, str(config.session), response_identity):
                 return existing
             payload, detected = self._current_or_stale(config, clean_interaction_id)
+            timeline_event = None
+            if self.command_timeline is not None:
+                timeline_event = self.command_timeline.event_for_interaction(
+                    self._command_owner_key(config),
+                    clean_interaction_id,
+                )
             keys = self._keys_for_response(
                 payload,
                 detected,
@@ -321,6 +343,20 @@ class InteractionService:
                 "resolved": latest.get("interaction") is None,
                 "duplicate": False,
             }
+            if timeline_event is not None:
+                metadata = {"action": "cancel"} if clean_action == "cancel" else None
+                next_interaction = result.get("interaction")
+                updated = self.command_timeline.update(
+                    str(timeline_event["id"]),
+                    status="completed" if result["resolved"] else "waiting",
+                    metadata=metadata,
+                    interaction_id=(
+                        str(next_interaction.get("id") or "")
+                        if isinstance(next_interaction, dict)
+                        else ""
+                    ),
+                )
+                result["commandEvent"] = self._timeline_public(updated)
             return self._remember_receipt(
                 request_id,
                 str(config.session),
@@ -394,73 +430,124 @@ class InteractionService:
                     "Codex TUI already has an unsent draft",
                     HTTPStatus.CONFLICT,
                 )
-            baseline = self.runtime.capture(config)
-            self.runtime.send_literal(config, invocation)
-            draft_deadline = self._now() + min(1.2, self.transition_timeout)
-            while self._now() < draft_deadline and not self.runtime.composer_contains(config, invocation):
-                self._sleep(self.poll_interval)
-            if not self.runtime.composer_contains(config, invocation):
-                raise InteractionServiceError(
-                    "Codex command could not be placed in the composer",
-                    HTTPStatus.GATEWAY_TIMEOUT,
-                )
-            # Wait for the exact completion row when the runtime can observe
-            # it.  A fixed one-frame delay is too short on a real Codex TUI and
-            # can make Enter merely accept autocomplete instead of executing
-            # the command.  This path still sends Enter exactly once.
-            completion_ready = getattr(self.runtime, "command_completion_ready", None)
-            completion_deadline = self._now() + min(0.9, self.transition_timeout)
-            if callable(completion_ready):
-                while self._now() < completion_deadline and not completion_ready(config, entry.command):
+            timeline_event = None
+            timeline_duplicate = False
+            if self.command_timeline is not None:
+                try:
+                    timeline_event, timeline_duplicate = self.command_timeline.begin(
+                        owner_key=self._command_owner_key(config),
+                        request_id=request_id,
+                        invocation=invocation,
+                    )
+                except RuntimeError as exc:
+                    raise InteractionServiceError(str(exc), HTTPStatus.CONFLICT) from exc
+                if timeline_duplicate and timeline_event is not None:
+                    if timeline_event.get("status") == "failed":
+                        raise InteractionServiceError("the previous command attempt failed", HTTPStatus.CONFLICT)
+                    return {
+                        "ok": True,
+                        "requestId": request_id,
+                        "command": entry.command,
+                        "behavior": behavior,
+                        "commandState": str(timeline_event.get("status") or "completed"),
+                        "interaction": self.snapshot(config).get("interaction"),
+                        "interactionRevision": self.snapshot(config).get("interactionRevision"),
+                        "changed": False,
+                        "duplicate": True,
+                        "commandEvent": self._timeline_public(timeline_event),
+                    }
+            try:
+                baseline = self.runtime.capture(config)
+                self.runtime.send_literal(config, invocation)
+                draft_deadline = self._now() + min(1.2, self.transition_timeout)
+                while self._now() < draft_deadline and not self.runtime.composer_contains(config, invocation):
                     self._sleep(self.poll_interval)
-            else:
-                self._sleep(max(0.35, self.poll_interval))
-            self.runtime.send_key(config, "Enter")
+                if not self.runtime.composer_contains(config, invocation):
+                    raise InteractionServiceError(
+                        "Codex command could not be placed in the composer",
+                        HTTPStatus.GATEWAY_TIMEOUT,
+                    )
+                # Wait for the exact completion row when the runtime can observe
+                # it.  A fixed one-frame delay is too short on a real Codex TUI and
+                # can make Enter merely accept autocomplete instead of executing
+                # the command.  This path still sends Enter exactly once.
+                completion_ready = getattr(self.runtime, "command_completion_ready", None)
+                completion_deadline = self._now() + min(0.9, self.transition_timeout)
+                if callable(completion_ready):
+                    while self._now() < completion_deadline and not completion_ready(config, entry.command):
+                        self._sleep(self.poll_interval)
+                else:
+                    self._sleep(max(0.35, self.poll_interval))
+                self.runtime.send_key(config, "Enter")
 
-            deadline = self._now() + self.transition_timeout
-            latest = self.snapshot(config)
-            while self._now() < deadline:
-                if not self.runtime.is_codex(config):
-                    status = "completed"
-                    latest = {"interaction": None, "interactionRevision": "none"}
-                    break
-                pending = latest.get("interaction")
-                if isinstance(pending, dict):
-                    status = "pending"
-                    break
-                command_still_present = self.runtime.composer_contains(config, invocation)
-                if not command_still_present:
-                    if self.runtime.ready_for_input(config):
-                        status = "completed"
-                        break
-                    turn_running = getattr(self.runtime, "turn_running", None)
-                    if callable(turn_running) and turn_running(config):
-                        status = "running"
-                        break
-                self._sleep(self.poll_interval)
+                deadline = self._now() + self.transition_timeout
                 latest = self.snapshot(config)
-            else:
-                status = "ambiguous"
-            if status == "ambiguous":
-                raise InteractionServiceError(
-                    "Codex did not accept the local command; no key was retried",
-                    HTTPStatus.GATEWAY_TIMEOUT,
+                while self._now() < deadline:
+                    if not self.runtime.is_codex(config):
+                        status = "completed"
+                        latest = {"interaction": None, "interactionRevision": "none"}
+                        break
+                    pending = latest.get("interaction")
+                    if isinstance(pending, dict):
+                        status = "pending"
+                        break
+                    command_still_present = self.runtime.composer_contains(config, invocation)
+                    if not command_still_present:
+                        if self.runtime.ready_for_input(config):
+                            status = "completed"
+                            break
+                        turn_running = getattr(self.runtime, "turn_running", None)
+                        if callable(turn_running) and turn_running(config):
+                            status = "running"
+                            break
+                    self._sleep(self.poll_interval)
+                    latest = self.snapshot(config)
+                else:
+                    status = "ambiguous"
+                if status == "ambiguous":
+                    raise InteractionServiceError(
+                        "Codex did not accept the local command; no key was retried",
+                        HTTPStatus.GATEWAY_TIMEOUT,
+                    )
+                changed = self.runtime.capture(config) != baseline
+                public_event = None
+                if timeline_event is not None:
+                    # `running` here describes the pre-existing Codex turn,
+                    # not the local slash command.  Once the exact command has
+                    # left the composer without opening a menu, its lifecycle
+                    # is complete.
+                    timeline_status = "waiting" if status == "pending" else "completed"
+                    interaction = latest.get("interaction")
+                    updated = self.command_timeline.update(
+                        str(timeline_event["id"]),
+                        status=timeline_status,
+                        interaction_id=str(interaction.get("id") or "") if isinstance(interaction, dict) else "",
+                    )
+                    public_event = self._timeline_public(updated)
+                result = {
+                    "ok": True,
+                    "requestId": request_id,
+                    "command": entry.command,
+                    "behavior": behavior,
+                    "commandState": status,
+                    "interaction": latest.get("interaction"),
+                    "interactionRevision": latest.get("interactionRevision"),
+                    "changed": changed,
+                    "duplicate": False,
+                }
+                if public_event is not None:
+                    result["commandEvent"] = public_event
+                return self._remember_receipt(
+                    request_id,
+                    str(config.session),
+                    command_identity,
+                    result,
                 )
-            changed = self.runtime.capture(config) != baseline
-            result = {
-                "ok": True,
-                "requestId": request_id,
-                "command": entry.command,
-                "behavior": behavior,
-                "commandState": status,
-                "interaction": latest.get("interaction"),
-                "interactionRevision": latest.get("interactionRevision"),
-                "changed": changed,
-                "duplicate": False,
-            }
-            return self._remember_receipt(
-                request_id,
-                str(config.session),
-                command_identity,
-                result,
-            )
+            except Exception as exc:
+                if timeline_event is not None:
+                    self.command_timeline.update(
+                        str(timeline_event["id"]),
+                        status="failed",
+                        error=str(exc),
+                    )
+                raise

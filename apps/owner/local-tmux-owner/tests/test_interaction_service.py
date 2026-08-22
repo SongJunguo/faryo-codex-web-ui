@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -10,6 +11,7 @@ if str(APP_DIR) not in sys.path:
 
 import codex_tui_interactions
 import interaction_service
+from command_timeline import CommandTimelineStore
 
 
 MODEL_A = """
@@ -91,6 +93,9 @@ class Runtime:
 
     def turn_running(self, _config):
         return False
+
+    def command_owner_key(self, _config):
+        return "thread:anonymous"
 
 
 class InteractionServiceTest(unittest.TestCase):
@@ -356,6 +361,44 @@ class InteractionServiceTest(unittest.TestCase):
 
         self.assertEqual("completed", result["commandState"])
         self.assertEqual(["Enter"], self.runtime.keys)
+
+    def test_tui_command_timeline_waits_and_completes_without_becoming_a_message(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = CommandTimelineStore(Path(temp) / "commands.json")
+            service = interaction_service.InteractionService(
+                self.runtime,
+                codex_tui_interactions.detect_interaction,
+                command_timeline=store,
+                transition_timeout=0.2,
+                poll_interval=0.01,
+            )
+            self.runtime.screen = "› Ask Codex"
+            self.runtime.ready = True
+
+            def open_model(key):
+                if key == "Enter":
+                    self.runtime.command_text = ""
+                    self.runtime.ready = False
+                    self.runtime.screen = MODEL_A
+
+            self.runtime.on_key = open_model
+            opened = service.begin_command(
+                self.config,
+                command="/model",
+                client_request_id="command-timeline-model-1",
+            )
+            self.assertEqual(opened["commandEvent"]["status"], "waiting")
+            self.runtime.on_key = lambda key: setattr(self.runtime, "screen", "› Ask Codex") if key == "Escape" else None
+            closed = service.respond(
+                self.config,
+                interaction_id=opened["interaction"]["id"],
+                action="cancel",
+                client_request_id="command-timeline-close-1",
+            )
+
+            self.assertEqual(closed["commandEvent"]["status"], "completed")
+            self.assertIn("cancelled", closed["commandEvent"]["summary"])
+            self.assertEqual([event["name"] for event in store.public_events("thread:anonymous")], ["/model"])
 
 
 if __name__ == "__main__":

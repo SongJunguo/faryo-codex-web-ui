@@ -96,6 +96,7 @@ release_checks() {
     "$ROOT/apps/owner/local-tmux-owner/codex_app_server.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_capabilities.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_commands.py" \
+    "$ROOT/apps/owner/local-tmux-owner/command_timeline.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_events.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_history.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_protocol.py" \
@@ -197,6 +198,7 @@ release_checks() {
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-real-appserver-streaming.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-structured-interactions.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-goal-details.mjs"
+  "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-command-activity.mjs"
   "$NODE_BIN" --check "$ROOT/apps/gateway/server/tests/browser-workbench-smoke.mjs"
   "$NODE_BIN" --check "$ROOT/apps/gateway/server/tests/browser-resume-preflight.mjs"
   "$NODE_BIN" "$ROOT/apps/owner/local-tmux-owner/tests/markdown-ast-bundle.test.js"
@@ -268,8 +270,10 @@ appserver_history_source = (root / "apps/owner/local-tmux-owner/appserver_histor
 appserver_rollout_source = (root / "apps/owner/local-tmux-owner/appserver_rollout.py").read_text(encoding="utf-8")
 appserver_registry_source = (root / "apps/owner/local-tmux-owner/appserver_registry.py").read_text(encoding="utf-8")
 appserver_runtime_source = (root / "apps/owner/local-tmux-owner/appserver_runtime.py").read_text(encoding="utf-8")
+command_timeline_source = (root / "apps/owner/local-tmux-owner/command_timeline.py").read_text(encoding="utf-8")
 real_appserver_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-real-appserver-streaming.mjs").read_text(encoding="utf-8")
 durable_activity_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-durable-activity.mjs").read_text(encoding="utf-8")
+command_activity_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-command-activity.mjs").read_text(encoding="utf-8")
 owner_session_catalog_source = (root / "apps/owner/local-tmux-owner/session_catalog.py").read_text(encoding="utf-8")
 owner_session_launch_source = (root / "apps/owner/local-tmux-owner/session_launch.py").read_text(encoding="utf-8")
 owner_backend_source = "\n".join((
@@ -554,6 +558,9 @@ assert "MAX_ATTACHMENTS = 35" in app and "uploadConcurrency: 4" in app, "Owner m
 assert "olderLoadQueued" in history_controller_source and "function emptyConversationHistory(" not in app, "Owner paged history state must remain in its controller"
 assert '"messageBlocks"' in owner_server and "def message_blocks(" in appserver_session_source and "def _project_message_blocks(" in appserver_history_source and "message_blocks=[" in owner_server and '"blocks": list(item["blocks"])' in appserver_history_source, "App Server roles must stay structured and grouped by turn through capture and history"
 assert "appserver_rollout.activity_blocks" in owner_server and 'payload_type == "custom_tool_call"' in appserver_rollout_source and 'payload_type == "patch_apply_end"' in appserver_rollout_source and "durable_activity=durable_activity" in owner_server, "App Server history must recover durable command and file activity after reconnects"
+assert "CommandTimelineStore" in command_timeline_source and "NON_DURABLE_COMMANDS" in command_timeline_source and "commandEvents" in owner_server, "browser-issued commands must use the private typed command lifecycle"
+assert 'path == "/api/activity-detail"' in owner_asgi_read_source and "activity_projection" in appserver_session_source and "appserver_rollout.activity_detail" in owner_server, "typed activity details must remain authenticated, bounded and reconnect-safe"
+assert "mergeCommandEvents" in app and "activity?.detailAvailable" in app and "page.reload" in command_activity_browser_source, "command rows and on-demand activity details need an ordinary-reload browser gate"
 assert "mergeMessageBlocks(displayBlocks(), liveBlocks)" in history_controller_source and "if (capture.streaming) return capture" in history_controller_source, "settled history must not replace a live App Server capture"
 assert "appserver-stream-progress" in app and "appserver-stream-progress" in owner_style, "App Server streaming must expose a visible progress state"
 assert "state.activeLengthCount < 2" in real_appserver_browser_source and "state.loadedQuestionMarkers < 2" in real_appserver_browser_source and "state.userBlockCount < 2" in real_appserver_browser_source and "!questionJump.targetUser" in real_appserver_browser_source, "real App Server browser validation must prove incremental roles and a working question jump"

@@ -27,9 +27,13 @@ from appserver_session import (
     HANDLED_NOTIFICATION_METHODS,
     ActorEvent,
     WebSessionActor,
+    activity_detail,
+    browser_item_key,
+    browser_turn_key,
     user_message_text,
 )
 from appserver_transport import AsyncCodexAppServerClient, unix_socket_connector
+import command_timeline
 
 
 RUNTIME_CALL_TIMEOUT = 20.0
@@ -55,6 +59,7 @@ class AppServerRuntime:
         client_version: str,
         reserved_names: Callable[[], list[str]] | None = None,
         namespace_lock: threading.RLock | None = None,
+        command_store: command_timeline.CommandTimelineStore | None = None,
         client_factory: Callable[[Callable[..., Any], Callable[..., Any]], Any] | None = None,
         journal_max_events: int = 4096,
         journal_max_bytes: int = 8 * 1024 * 1024,
@@ -64,6 +69,9 @@ class AppServerRuntime:
         self.client_version = client_version
         self.reserved_names = reserved_names or (lambda: [])
         self.namespace_lock = namespace_lock or threading.RLock()
+        self.command_timeline = command_store or command_timeline.CommandTimelineStore(
+            registry_path.with_name("command-timeline.json")
+        )
         self.client_factory = client_factory
         self.journal = EventJournal(max_events=journal_max_events, max_bytes=journal_max_bytes)
         self.actors: dict[str, WebSessionActor] = {}
@@ -240,6 +248,9 @@ class AppServerRuntime:
 
     def capture(self, name: str, timeout: float = 5.0) -> dict[str, Any]:
         return self._submit(self._capture(name), timeout)
+
+    def activity_detail(self, name: str, item_id: str, timeout: float = 5.0) -> dict[str, Any]:
+        return self._submit(self._activity_detail(name, item_id), timeout)
 
     def replay(self, cursor: str | None) -> ReplayResult:
         with self.condition:
@@ -699,7 +710,28 @@ class AppServerRuntime:
             "snapshot": snapshot,
             "messages": actor.messages(),
             "messageBlocks": actor.message_blocks(),
+            "commandEvents": self.command_timeline.public_events(self._command_owner_key(record)),
         }
+
+    async def _activity_detail(self, name: str, item_id: str) -> dict[str, Any]:
+        _record, actor = self._require_session(name)
+        public_id = str(item_id or "").strip()
+        if not re.fullmatch(r"appserver-item-[0-9a-f]{16}", public_id):
+            raise AppServerRuntimeError("invalid activity item")
+        projection = next(
+            (
+                actor.items[raw_id]
+                for raw_id in actor.item_order
+                if browser_item_key(raw_id) == public_id
+            ),
+            None,
+        )
+        if projection is None:
+            raise AppServerRuntimeError("activity detail is unavailable")
+        detail = activity_detail(projection.raw, final=projection.final)
+        if detail is None:
+            raise AppServerRuntimeError("activity detail is unavailable")
+        return {"item": public_id, "detail": detail}
 
     async def _close_session(self, name: str) -> dict[str, Any]:
         record, actor = self._require_session(name)
@@ -725,7 +757,22 @@ class AppServerRuntime:
         action: str,
         client_request_id: str,
     ) -> dict[str, Any]:
-        self._require_session(name)
+        record, actor = self._require_session(name)
+        timeline_event = self.command_timeline.event_for_interaction(
+            self._command_owner_key(record),
+            interaction_id,
+        )
+        selected_label = ""
+        if timeline_event is not None and isinstance(actor.interaction, Mapping):
+            selected = next(
+                (
+                    option
+                    for option in actor.interaction.get("options") or []
+                    if isinstance(option, Mapping) and str(option.get("id") or "") == option_id
+                ),
+                None,
+            )
+            selected_label = str(selected.get("label") or "") if isinstance(selected, Mapping) else ""
         try:
             local = await self.commands.respond(
                 session=name,
@@ -735,6 +782,19 @@ class AppServerRuntime:
                 rpc=self._require_client().rpc,
             )
             if local is not None:
+                if timeline_event is not None:
+                    metadata: dict[str, Any] = {}
+                    if selected_label:
+                        metadata["selection"] = selected_label
+                    if action == "cancel":
+                        metadata["action"] = "cancel"
+                    updated = self.command_timeline.update(
+                        str(timeline_event["id"]),
+                        status="completed",
+                        metadata=metadata,
+                    )
+                    local["commandEvent"] = self.command_timeline.public_event(updated) if updated is not None else None
+                    self._publish_command_event(record, updated)
                 await asyncio.sleep(0)
                 return local
             if action == "cancel":
@@ -776,6 +836,32 @@ class AppServerRuntime:
         record, actor = self._require_session(name)
         if actor.interaction is not None:
             raise AppServerRuntimeError("another Codex interaction is already pending")
+        owner_key = self._command_owner_key(record)
+        anchor_turn = actor.active_turn_id or next(reversed(actor.turns), "")
+        try:
+            timeline_event, timeline_duplicate = self.command_timeline.begin(
+                owner_key=owner_key,
+                request_id=request_id,
+                invocation=invocation,
+                anchor_key=browser_turn_key(anchor_turn) if anchor_turn else "",
+            )
+        except command_timeline.CommandTimelineError as exc:
+            raise AppServerRuntimeError(str(exc)) from exc
+        if timeline_duplicate and timeline_event is not None:
+            if timeline_event.get("status") == "failed":
+                raise AppServerRuntimeError("the previous command attempt failed")
+            public_event = self.command_timeline.public_event(timeline_event)
+            return {
+                "ok": True,
+                "session": name,
+                "interaction": actor.interaction,
+                "interactionRevision": f"appserver:{actor.interaction_revision}",
+                "changed": False,
+                "resolved": timeline_event.get("status") == "completed",
+                "commandState": timeline_event.get("status"),
+                "commandEvent": public_event,
+                "duplicate": True,
+            }
         try:
             result = await self.commands.begin(
                 session=name,
@@ -785,14 +871,71 @@ class AppServerRuntime:
                 command=invocation,
                 rpc=self._require_client().rpc,
             )
-        except AppServerCommandError as exc:
-            raise AppServerRuntimeError(str(exc)) from exc
+        except Exception as exc:
+            if timeline_event is not None:
+                updated = self.command_timeline.update(
+                    str(timeline_event["id"]),
+                    status="failed",
+                    error=str(exc),
+                )
+                self._publish_command_event(record, updated)
+            if isinstance(exc, AppServerCommandError):
+                raise AppServerRuntimeError(str(exc)) from exc
+            raise
+        if timeline_event is not None:
+            interaction = result.get("interaction")
+            status = "waiting" if isinstance(interaction, Mapping) else "completed"
+            updated = self.command_timeline.update(
+                str(timeline_event["id"]),
+                status=status,
+                metadata=self._command_result_metadata(invocation, actor),
+                interaction_id=str(interaction.get("id") or "") if isinstance(interaction, Mapping) else "",
+            )
+            result["commandState"] = status
+            result["commandEvent"] = self.command_timeline.public_event(updated) if updated is not None else None
+            self._publish_command_event(record, updated)
         self.command_receipts[request_id] = {
             "identity": identity,
             "result": dict(result),
             "updatedAt": time.monotonic(),
         }
         return result
+
+    @staticmethod
+    def _command_owner_key(record: WebSessionRecord) -> str:
+        return f"thread:{record.thread_id}"
+
+    @staticmethod
+    def _command_result_metadata(invocation: str, actor: WebSessionActor) -> dict[str, Any]:
+        parts = command_timeline.command_parts(invocation)
+        if parts is None:
+            return {}
+        name, argument = parts
+        if name == "/fast":
+            return {"enabled": str(actor.thread.get("serviceTier") or "") == "fast"}
+        if name == "/model":
+            selection = argument or str(actor.thread.get("model") or "")
+            return {"selection": selection} if selection else {}
+        if name == "/permissions":
+            current = actor.thread.get("activePermissionProfile")
+            selection = argument or (str(current.get("id") or "") if isinstance(current, Mapping) else "")
+            return {"selection": selection} if selection else {}
+        return {}
+
+    def _publish_command_event(
+        self,
+        record: WebSessionRecord,
+        event: Mapping[str, Any] | None,
+    ) -> None:
+        if event is None:
+            return
+        self._publish(
+            record,
+            ActorEvent(
+                "command.changed",
+                payload={"commandId": str(event.get("id") or ""), "status": str(event.get("status") or "")},
+            ),
+        )
 
     def _require_client(self) -> AsyncCodexAppServerClient:
         client = self.client

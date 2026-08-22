@@ -46,6 +46,7 @@ import session_catalog
 import session_launch
 import codex_tui_interactions
 import interaction_service
+import command_timeline
 from faryo_cli import codex_runtime, session_backend
 
 SHARED_DIR = Path(__file__).resolve().parents[2] / "shared"
@@ -164,6 +165,12 @@ APP_SERVER_REGISTRY = Path(
     os.environ.get(
         "FARYO_CODEX_APP_SERVER_REGISTRY",
         str(FARYO_OWNER_DATA.parent / "state/appserver-sessions.json"),
+    )
+).expanduser()
+COMMAND_TIMELINE_PATH = Path(
+    os.environ.get(
+        "FARYO_COMMAND_TIMELINE",
+        str(FARYO_OWNER_DATA.parent / "state/command-timeline.json"),
     )
 ).expanduser()
 MAX_ATTACHMENT_UPLOAD_BYTES = attachment_storage.DEFAULT_MAX_UPLOAD_BYTES
@@ -297,6 +304,7 @@ _delivery_store = delivery_store.DeliveryStore(
     ttl_seconds=SEND_DELIVERY_TTL_SECONDS,
     cleanup_interval_seconds=SEND_DELIVERY_CLEANUP_INTERVAL_SECONDS,
 )
+_command_timeline_store = command_timeline.CommandTimelineStore(COMMAND_TIMELINE_PATH)
 
 
 def short_path(path: str | None) -> str | None:
@@ -1716,6 +1724,7 @@ def web_capture_payload_from_state(capture: dict[str, Any], lines: int) -> dict[
         "ok": True,
         "text": codex_message_transcript(messages, lines),
         "messageBlocks": codex_message_blocks(message_blocks, lines),
+        "commandEvents": list(capture.get("commandEvents") or []),
         "agentRunning": running,
         "queuedSendNowAvailable": False,
         "agentSource": "codex-app-server",
@@ -1747,6 +1756,29 @@ def web_capture_payload(
     except appserver_runtime.AppServerRuntimeError as exc:
         raise OwnerError(str(exc), HTTPStatus.BAD_GATEWAY) from exc
     return web_capture_payload_from_state(capture, lines)
+
+
+def web_activity_detail(
+    runtime: appserver_runtime.AppServerRuntime,
+    session: str,
+    item_id: str,
+) -> dict[str, Any]:
+    try:
+        return runtime.activity_detail(session, item_id)
+    except appserver_runtime.AppServerRuntimeError:
+        # Some completed tool items are intentionally omitted by thread/read
+        # after reconnect.  The Codex rollout remains authoritative for those
+        # items; project only the requested bounded detail.
+        capture = runtime.capture(session)
+        record = capture.get("record") if isinstance(capture.get("record"), dict) else {}
+        thread_id = str(record.get("threadId") or "")
+        thread = codex_thread_by_id(thread_id) if thread_id else None
+        history_path = str(thread.get("rollout_path") or "") if isinstance(thread, dict) else ""
+        if history_path and rollout_thread_id_from_path(history_path) == thread_id:
+            detail = appserver_rollout.activity_detail(history_path, item_id)
+            if detail is not None:
+                return {"item": item_id, "detail": detail, "source": "codex-rollout"}
+        raise OwnerError("activity detail is unavailable", HTTPStatus.NOT_FOUND) from None
 
 
 def web_conversation_history_page(
@@ -2886,6 +2918,13 @@ class InteractionRuntime:
         return send_session_delivery_lock(session)
 
     @staticmethod
+    def command_owner_key(config: Config) -> str:
+        # A TUI interaction is owned by the concrete tmux session for its whole
+        # lifetime.  Thread discovery may briefly disappear during resume or
+        # compaction, so using it here would strand a waiting menu event.
+        return f"tui:{config.session}"
+
+    @staticmethod
     def send_literal(config: Config, text: str) -> None:
         result = tmux(
             config,
@@ -2914,7 +2953,16 @@ class InteractionRuntime:
 _interaction_service = interaction_service.InteractionService(
     InteractionRuntime(),
     codex_tui_interactions.detect_interaction,
+    command_timeline=_command_timeline_store,
 )
+
+
+def command_timeline_store() -> command_timeline.CommandTimelineStore:
+    return _command_timeline_store
+
+
+def command_timeline_events_for_config(config: Config) -> list[dict[str, Any]]:
+    return _command_timeline_store.public_events(InteractionRuntime.command_owner_key(config))
 
 
 def interaction_snapshot(config: Config) -> dict[str, Any]:

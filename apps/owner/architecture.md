@@ -65,6 +65,11 @@ Default product data root:
   logs/
 ```
 
+Private control state lives beside the data root under `~/.faryo/owner/state/`.
+`command-timeline.json` contains only bounded browser-issued command lifecycle
+metadata, uses mode `0600` below a `0700` directory, and is not a second Codex
+transcript.
+
 The workspace is the terminal command working directory. It is not the Faryo
 product data root. Gateway may inject user/route-specific upload destinations,
 but the default upload destination should come from the Faryo data directory.
@@ -117,6 +122,11 @@ but the default upload destination should come from the Faryo data directory.
   command/action receipts, and the only conversion from validated actions to
   TUI keys. `/model`, `/usage`, and future catalog commands do not pass through
   ordinary message delivery.
+- `command_timeline.py` owns the shared App Server/TUI presentation lifecycle
+  for browser-issued mutating slash commands. It records only command name,
+  safe type-specific display metadata, state, timing and an optional hashed
+  turn anchor; Goal objectives, messages, credentials and free-form unknown
+  arguments are excluded. Interactive stages keep one event id until resolved.
 - `apps/owner/ui/` is the readable Preact + strict TypeScript source for the
   composer, command palette, structured interaction sheet, error boundary and
   dynamic Context/Week/Model/Goal/Git shell. Its framework-neutral
@@ -131,6 +141,12 @@ but the default upload destination should come from the Faryo data directory.
 - `codex_app_server.py` owns the serialized stdio process, initialize handshake,
   request IDs, retry/reap lifecycle and JSON-RPC result/error mapping. Higher
   history/archive/rate-limit services call thin Owner wrappers.
+- `appserver_session.py` projects official tool item types and states into a
+  bounded browser activity envelope. Full command output, tool results and file
+  diffs stay out of capture/history/SSE and are projected only by the
+  authenticated, no-store `/api/activity-detail` route. `appserver_rollout.py`
+  provides the same bounded single-item fallback after reconnect, while hidden
+  reasoning remains unavailable.
 - Low-level command execution and tmux/process-tree/identifier primitives are
   isolated in `tmux_runtime.py`; higher services keep policy and translate
   failures rather than rebuilding subprocess defaults.

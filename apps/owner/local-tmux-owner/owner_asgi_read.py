@@ -16,6 +16,7 @@ from starlette.routing import Route
 
 import codex_command_policy
 import codex_history
+import appserver_runtime
 import runtime_diagnostics
 import workspace_changes
 
@@ -51,6 +52,8 @@ def terminal_capture_response(core: Any, target: Any, lines: int, want_html: boo
         "backend": core.session_backend.CODEX_TUI.value,
         "updatedAt": core.now_iso(),
     }
+    if profile is core.CODEX_PROFILE:
+        payload["commandEvents"] = core.command_timeline_events_for_config(target)
     if profile is core.CODEX_PROFILE:
         payload.update(core.interaction_snapshot(target))
     if thread_id:
@@ -134,6 +137,18 @@ class OwnerReadRoutes:
                     "updatedAt": core.now_iso(),
                 }
             return self.support.json_response(payload)
+
+        if path == "/api/activity-detail":
+            if not runtime.has_session(session):
+                raise core.OwnerError("activity detail is unavailable", HTTPStatus.NOT_FOUND)
+            try:
+                payload = await to_thread.run_sync(
+                    lambda: core.web_activity_detail(runtime, session, request.query_params.get("item", "")),
+                    abandon_on_cancel=True,
+                )
+            except (appserver_runtime.AppServerRuntimeError, core.OwnerError) as exc:
+                raise core.OwnerError(str(exc), HTTPStatus.NOT_FOUND) from exc
+            return self.support.json_response({"ok": True, **payload, "updatedAt": core.now_iso()})
 
         if path == "/api/command-catalog":
             return self.support.json_response({

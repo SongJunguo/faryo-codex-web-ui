@@ -19,6 +19,27 @@ export function isStructuredCapture(capture) {
 }
 
 const MESSAGE_KINDS = new Set(["user", "output", "process", "plan"]);
+const ACTIVITY_TYPES = new Set(["command", "file_change", "search", "mcp", "tool", "image", "compaction", "error", "unknown"]);
+const ACTIVITY_STATUSES = new Set(["running", "waiting", "completed", "failed", "declined"]);
+
+export function normalizeActivity(value) {
+  if (!value || typeof value !== "object") return null;
+  const type = String(value.type || "");
+  const status = String(value.status || "");
+  if (!ACTIVITY_TYPES.has(type) || !ACTIVITY_STATUSES.has(status)) return null;
+  const result = {
+    type,
+    status,
+    title: String(value.title || "").slice(0, 520),
+    summary: String(value.summary || "").slice(0, 360),
+    detailKind: String(value.detailKind || "none").slice(0, 48),
+    detailAvailable: Boolean(value.detailAvailable),
+  };
+  for (const key of ["exitCode", "durationMs", "changeCount"]) {
+    if (Number.isFinite(Number(value[key]))) result[key] = Number(value[key]);
+  }
+  return result;
+}
 
 export function normalizeMessageBlocks(value) {
   if (!Array.isArray(value)) return [];
@@ -26,7 +47,7 @@ export function normalizeMessageBlocks(value) {
     const kind = String(item?.kind || "");
     const text = String(item?.text || "").trim();
     if (!MESSAGE_KINDS.has(kind) || !text) return [];
-    return [{
+    const block = {
       id: String(item?.id || `anonymous-${index}`),
       turnKey: String(item?.turnKey || ""),
       questionKey: String(item?.questionKey || ""),
@@ -35,7 +56,10 @@ export function normalizeMessageBlocks(value) {
       text,
       revision: Math.max(0, Number(item?.revision || 0)),
       final: item?.final !== false,
-    }];
+    };
+    const activity = normalizeActivity(item?.activity);
+    if (activity) block.activity = activity;
+    return [block];
   });
 }
 

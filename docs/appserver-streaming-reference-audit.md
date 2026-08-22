@@ -9,8 +9,9 @@ Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room �
 
 | 项目 | 固定提交 | 用途 | 许可证边界 |
 | --- | --- | --- | --- |
-| [YepAnywhere](https://github.com/kzahel/yepanywhere) | `f1b0b08ea8bdfe07fdcf8256e5c579bd985844d5` | Codex delta 聚合、稳定消息身份、实时/持久态收敛、长历史渲染 | README 标注 MIT，但该快照根目录没有标准许可证文件；只借鉴公开架构思想，不复制代码 |
-| [HAPI](https://github.com/tiann/hapi) | `ca4390a32a17c82176afdf2a50e1e5555a3e9ac6` | 双向 App Server RPC、单写者切换、SSE cursor/replay/gap、Web 交互边界 | AGPL-3.0-only；只做行为和协议研究，不复制实现 |
+| [YepAnywhere](https://github.com/kzahel/yepanywhere) | `b1091fb05d021c7044af5b41fe15f2d754ea659e` | Codex delta 聚合、稳定消息身份、local-command system row、typed tool fallback 和长历史 | README 标注 MIT，但该快照根目录没有标准许可证文件；只借鉴公开架构思想，不复制代码 |
+| [HAPI](https://github.com/tiann/hapi) | `be1ef2a2e4d6d8836ca28695d86ccff47d0c03a3` | 双向 App Server RPC、typed tool begin/end、工具分组/详情和 Web 交互边界 | AGPL-3.0-only；只做行为和协议研究，不复制实现 |
+| [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | command run/done 独立生命周期、session title event 和 log-only command 边界 | 只借鉴公开事件模型；不复制实现或视觉资产 |
 | [OpenAI Codex](https://github.com/openai/codex) | `ad9e8097fd3d0d2f1c1166575d2c6cd8cb9e1833` | App Server 官方协议、Unix socket、多连接、线程生命周期 | 上游官方源码与本机版本生成 schema 是协议依据 |
 
 两个第三方仓库均以完整工作树的浅克隆保存于仓库外的参考区，未加入 Faryo Git 历史、
@@ -70,6 +71,13 @@ KaTeX 与代码高亮按闭合块和最终内容处理。Faryo 的 Preact 迁移
 实时正文不得等待语法高亮、diff 摘要或其他富化步骤。任何较慢的增强结果都用同一稳定
 identity 追加 revision，不能阻塞原始消息进入浏览器。
 
+### 4. 会话命令与模型正文分离
+
+YepAnywhere 把本地 slash command 投影成独立 system message，不把它伪装成用户 prompt。
+Faryo 使用同一职责边界，但为 mutating Web command 建立专门的 command lifecycle：稳定 id、
+`running/waiting/completed/failed`、安全摘要和最近 turn 锚点。读取型 `/usage` 等面板不产生
+持久噪声，Goal objective 和未知自由参数不进入该日志。
+
 ## 从 HAPI 吸收的设计
 
 ### 1. 真正双向的协议客户端
@@ -107,6 +115,20 @@ Faryo 将同一思想落实为 `Codex App Server` 与 `Codex TUI (tmux)` 两种�
 HAPI 当前 Codex converter 会在正文 delta 到达时只更新“正在输出”状态，并在 item complete
 后一次性提交正文。因此它不是 Faryo 正文流式实现的直接范本；Faryo 直接消费官方
 `item/agentMessage/delta`。
+
+### 4. Typed tool 分组与按需详情
+
+HAPI 保留 command/file/MCP 等 begin/end 类型，并把连续工具放进可折叠组；YepAnywhere 也
+保留 tool-use/tool-result identity，并为未知工具提供通用 fallback。Faryo clean-room 实现为：
+
+- 主 capture/history 只携带 type、status、短标题、计数和 detail capability；
+- 运行、等待、失败项目无需展开即可识别，已完成组默认折叠；
+- output、result 和 diff 只在认证后的单 item 请求中有界投影；
+- `thread/read` 省略旧工具时，从 Codex rollout 只读恢复同一 item 的摘要和详情；
+- reasoning body 永不进入工具详情。
+
+DeepSeek Harness 的 command registry 进一步证明命令控制事件应由 session/runtime 配对，而
+不是靠 assistant 文本回显。Faryo 借鉴这一事件边界，视觉上仍采用自身的紧凑 system row。
 
 ## 未采用的方案
 

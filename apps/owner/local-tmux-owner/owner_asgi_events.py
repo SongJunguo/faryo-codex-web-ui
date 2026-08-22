@@ -55,11 +55,16 @@ def terminal_capture_payload(core: Any, config: Any, lines: int) -> tuple[dict[s
         if profile is core.CODEX_PROFILE
         else {"interaction": None, "interactionRevision": "none"}
     )
+    command_events = core.command_timeline_events_for_config(config) if profile is core.CODEX_PROFILE else []
+    command_revision = ",".join(
+        f"{event.get('id')}:{event.get('status')}:{event.get('completedAt')}"
+        for event in command_events[-8:]
+    )
     digest = core.capture_event_digest(
         text,
         live_text,
         session_metadata,
-        str(interaction_state.get("interactionRevision") or ""),
+        f"{interaction_state.get('interactionRevision') or ''}:{command_revision}",
         queued_send_now,
     )
     payload = {
@@ -74,6 +79,8 @@ def terminal_capture_payload(core: Any, config: Any, lines: int) -> tuple[dict[s
         **interaction_state,
         "updatedAt": core.now_iso(),
     }
+    if command_events:
+        payload["commandEvents"] = command_events
     if thread_id:
         payload.update(session_metadata)
     if live_text:

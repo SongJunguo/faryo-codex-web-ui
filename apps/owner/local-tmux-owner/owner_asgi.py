@@ -23,6 +23,7 @@ def create_app(core: Any, config: Any, runtime: Any | None = None) -> Starlette:
         client_version=core.release_version() or "0",
         reserved_names=lambda: core.tmux_sessions(config),
         namespace_lock=core.RUNTIME_LOCK,
+        command_store=core.command_timeline_store(),
     )
     support = owner_asgi_support.OwnerAsgiSupport(core, config, web_runtime)
     streams = owner_asgi_events.OwnerEventStreams(core, support)

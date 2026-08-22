@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import hashlib
+import json
 from typing import Any, Mapping
 
 from appserver_protocol import agent_message_text, item_identity
@@ -30,6 +31,10 @@ HANDLED_NOTIFICATION_METHODS = frozenset({
     "turn/started",
 })
 
+ACTIVITY_DETAIL_TEXT_CHARS = 96 * 1024
+ACTIVITY_DETAIL_TOTAL_CHARS = 192 * 1024
+ACTIVITY_CHANGE_LIMIT = 120
+
 
 def _bounded_text(value: Any, limit: int = 2_000) -> str:
     text = " ".join(str(value or "").split())
@@ -39,6 +44,219 @@ def _bounded_text(value: Any, limit: int = 2_000) -> str:
 def _path_label(value: Any) -> str:
     text = str(value or "").replace("\\", "/").rstrip("/")
     return text.rsplit("/", 1)[-1] if text else "file"
+
+
+def _activity_status(item: Mapping[str, Any], *, final: bool = False) -> str:
+    value = str(item.get("status") or "").strip().lower().replace("_", "")
+    exit_code = item.get("exitCode", item.get("exit_code"))
+    if item.get("type") == "commandExecution" and isinstance(exit_code, int) and exit_code != 0:
+        return "failed"
+    if value in {"failed", "error", "cancelled", "canceled"}:
+        return "failed"
+    if value in {"declined", "denied"}:
+        return "declined"
+    if value in {"pending", "waiting", "needsapproval", "awaitingapproval"}:
+        return "waiting"
+    if value in {"completed", "complete", "succeeded", "success"} or final:
+        return "completed"
+    return "running"
+
+
+def activity_projection(item: Mapping[str, Any], *, final: bool = False) -> dict[str, Any] | None:
+    """Return the small typed activity envelope allowed in history payloads."""
+
+    item_type = str(item.get("type") or "")
+    status = _activity_status(item, final=final)
+    result: dict[str, Any]
+    if item_type == "commandExecution":
+        command = _bounded_text(item.get("command"), 520) or "Command"
+        result = {
+            "type": "command",
+            "title": command,
+            "summary": "Command finished" if status == "completed" else "Command failed" if status == "failed" else "Command running",
+            "detailKind": "command_output",
+            "detailAvailable": any(
+                key in item for key in ("aggregatedOutput", "stdout", "stderr", "command", "cwd", "exitCode")
+            ),
+        }
+        exit_code = item.get("exitCode", item.get("exit_code"))
+        if isinstance(exit_code, int):
+            result["exitCode"] = exit_code
+        duration = item.get("durationMs", item.get("duration_ms"))
+        if isinstance(duration, (int, float)) and duration >= 0:
+            result["durationMs"] = int(duration)
+    elif item_type == "fileChange":
+        changes = [value for value in item.get("changes") or [] if isinstance(value, Mapping)]
+        labels = [_path_label(change.get("path")) for change in changes[:3]]
+        title = ", ".join(labels) or "Files"
+        if len(changes) > len(labels):
+            title += f" and {len(changes) - len(labels)} more"
+        result = {
+            "type": "file_change",
+            "title": title,
+            "summary": f"{len(changes)} file change{'s' if len(changes) != 1 else ''}",
+            "changeCount": len(changes),
+            "detailKind": "file_changes",
+            "detailAvailable": bool(changes),
+        }
+    elif item_type == "webSearch":
+        query = _bounded_text(item.get("query"), 360) or "Web search"
+        result = {
+            "type": "search",
+            "title": query,
+            "summary": "Search finished" if status == "completed" else "Searching",
+            "detailKind": "search",
+            "detailAvailable": bool(item.get("results")),
+        }
+    elif item_type in {"mcpToolCall", "dynamicToolCall"}:
+        if item_type == "mcpToolCall":
+            label = ".".join(
+                part for part in (_bounded_text(item.get("server"), 100), _bounded_text(item.get("tool"), 140)) if part
+            )
+            activity_type = "mcp"
+        else:
+            label = ".".join(
+                part
+                for part in (_bounded_text(item.get("namespace"), 100), _bounded_text(item.get("tool"), 140))
+                if part
+            )
+            activity_type = "tool"
+        result = {
+            "type": activity_type,
+            "title": label or "Tool call",
+            "summary": "Tool finished" if status == "completed" else "Tool failed" if status == "failed" else "Tool running",
+            "detailKind": "tool_call",
+            "detailAvailable": any(
+                key in item for key in ("arguments", "input", "result", "output", "error", "content")
+            ),
+        }
+    elif item_type == "imageView":
+        result = {
+            "type": "image",
+            "title": _path_label(item.get("path")),
+            "summary": "Image viewed",
+            "detailKind": "none",
+            "detailAvailable": False,
+        }
+    elif item_type == "contextCompaction":
+        result = {
+            "type": "compaction",
+            "title": "Context compacted",
+            "summary": "Context compacted",
+            "detailKind": "none",
+            "detailAvailable": False,
+        }
+    elif item_type == "error":
+        result = {
+            "type": "error",
+            "title": _bounded_text(item.get("message"), 520) or "Codex error",
+            "summary": "Codex error",
+            "detailKind": "error",
+            "detailAvailable": bool(item.get("message")),
+        }
+        status = "failed"
+    elif item_type in {"plan", "todoList", "reasoning", "userMessage", "agentMessage"}:
+        return None
+    else:
+        result = {
+            "type": "unknown",
+            "title": _bounded_text(item_type, 180) or "Codex activity",
+            "summary": "Codex activity",
+            "detailKind": "none",
+            "detailAvailable": False,
+        }
+    result["status"] = status
+    return result
+
+
+def _detail_text(value: Any, limit: int = ACTIVITY_DETAIL_TEXT_CHARS) -> tuple[str, bool]:
+    if value is None:
+        return "", False
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+        except (TypeError, ValueError):
+            text = str(value)
+    if limit <= 0:
+        return "", bool(text)
+    if len(text) <= limit:
+        return text, False
+    head = max(1, limit * 3 // 4)
+    tail = max(1, limit - head)
+    return f"{text[:head]}\n\n… detail truncated …\n\n{text[-tail:]}", True
+
+
+def activity_detail(item: Mapping[str, Any], *, final: bool = False) -> dict[str, Any] | None:
+    """Project one authenticated detail view with per-field and total bounds."""
+
+    activity = activity_projection(
+        item,
+        final=final or _activity_status(item) in {"completed", "failed", "declined"},
+    )
+    if activity is None or activity.get("type") in {"unknown", "compaction", "image"}:
+        return None
+    detail: dict[str, Any] = {
+        "type": activity["type"],
+        "status": activity["status"],
+        "title": activity["title"],
+        "truncated": False,
+    }
+    item_type = str(item.get("type") or "")
+    if item_type == "commandExecution":
+        command, command_truncated = _detail_text(item.get("command"), 16 * 1024)
+        output_value = item.get("aggregatedOutput")
+        if output_value is None:
+            stdout = str(item.get("stdout") or "")
+            stderr = str(item.get("stderr") or "")
+            output_value = stdout + (("\n" if stdout and stderr else "") + stderr)
+        output, output_truncated = _detail_text(output_value)
+        cwd, cwd_truncated = _detail_text(item.get("cwd"), 4096)
+        detail.update({"command": command, "output": output, "cwd": cwd})
+        for source, target in (("exitCode", "exitCode"), ("exit_code", "exitCode"), ("durationMs", "durationMs"), ("duration_ms", "durationMs")):
+            if target not in detail and isinstance(item.get(source), (int, float)):
+                detail[target] = int(item[source])
+        detail["truncated"] = command_truncated or output_truncated or cwd_truncated
+    elif item_type == "fileChange":
+        changes: list[dict[str, Any]] = []
+        used_chars = 0
+        for raw in item.get("changes") or []:
+            if not isinstance(raw, Mapping) or len(changes) >= ACTIVITY_CHANGE_LIMIT:
+                detail["truncated"] = True
+                break
+            path, path_truncated = _detail_text(raw.get("path"), 4096)
+            diff, diff_truncated = _detail_text(
+                raw.get("diff", raw.get("unified_diff", raw.get("content"))),
+                min(ACTIVITY_DETAIL_TEXT_CHARS, max(0, ACTIVITY_DETAIL_TOTAL_CHARS - used_chars)),
+            )
+            used_chars += len(path) + len(diff)
+            changes.append({
+                "path": path,
+                "kind": _bounded_text(raw.get("kind", raw.get("type")), 80),
+                "diff": diff,
+                "truncated": path_truncated or diff_truncated,
+            })
+            if used_chars >= ACTIVITY_DETAIL_TOTAL_CHARS:
+                detail["truncated"] = True
+                break
+        detail["changes"] = changes
+        detail["truncated"] = bool(detail["truncated"] or any(change["truncated"] for change in changes))
+    elif item_type == "webSearch":
+        query, query_truncated = _detail_text(item.get("query"), 4096)
+        results, results_truncated = _detail_text(item.get("results"))
+        detail.update({"query": query, "results": results})
+        detail["truncated"] = query_truncated or results_truncated
+    else:
+        arguments = item.get("arguments", item.get("input"))
+        result_value = item.get("result", item.get("output", item.get("content")))
+        error_value = item.get("error")
+        arguments_text, arguments_truncated = _detail_text(arguments)
+        result_text, result_truncated = _detail_text(result_value)
+        error_text, error_truncated = _detail_text(error_value, 32 * 1024)
+        detail.update({"arguments": arguments_text, "result": result_text, "error": error_text})
+        detail["truncated"] = arguments_truncated or result_truncated or error_truncated
+    return detail
 
 
 def item_process_text(item: Mapping[str, Any], *, final: bool = False) -> str:
@@ -98,7 +316,7 @@ def item_process_text(item: Mapping[str, Any], *, final: bool = False) -> str:
         return "Working with a background agent"
     if item_type == "error":
         return "⚠ " + (_bounded_text(item.get("message"), 800) or "Codex error")
-    return ""
+    return f"Codex activity · {_bounded_text(item_type, 180)}" if item_type else ""
 
 
 def user_message_text(item: Mapping[str, Any]) -> str:
@@ -165,6 +383,10 @@ def message_block(
     }
     if kind == "user":
         block["questionKey"] = turn_key
+    elif kind == "process":
+        activity = activity_projection(item, final=final)
+        if activity is not None:
+            block["activity"] = activity
     return block
 
 
@@ -256,7 +478,11 @@ class WebSessionActor:
             return self._agent_delta(params)
         if method == "item/plan/delta":
             return self._plan_delta(params)
-        if method in {"item/commandExecution/outputDelta", "item/fileChange/outputDelta", "item/reasoning/summaryTextDelta"}:
+        if method == "item/commandExecution/outputDelta":
+            return self._activity_delta(params, "aggregatedOutput")
+        if method == "item/fileChange/outputDelta":
+            return self._activity_delta(params, "output")
+        if method == "item/reasoning/summaryTextDelta":
             return []
         if method == "item/completed":
             return self._item_completed(params)
@@ -352,6 +578,30 @@ class WebSessionActor:
                 item_id=item_id,
                 revision=projection.revision,
                 payload={"deltaChars": len(delta), "textLength": len(projection.text)},
+            )
+        ]
+
+    def _activity_delta(self, params: Mapping[str, Any], field_name: str) -> list[ActorEvent]:
+        identity = item_identity(params)
+        delta = params.get("delta")
+        if identity is None or not isinstance(delta, str):
+            return []
+        _thread_id, turn_id, item_id = identity
+        projection = self.items.get(item_id)
+        if projection is None or projection.final:
+            return []
+        current = str(projection.raw.get(field_name) or "")
+        # Live detail remains bounded even if a tool streams indefinitely.  A
+        # final item may replace this preview with the authoritative output.
+        projection.raw[field_name] = (current + delta)[-ACTIVITY_DETAIL_TEXT_CHARS:]
+        projection.revision += 1
+        return [
+            self._event(
+                "item.delta",
+                turn_id=turn_id,
+                item_id=item_id,
+                revision=projection.revision,
+                payload={"deltaChars": len(delta), "textLength": len(str(projection.raw[field_name]))},
             )
         ]
 

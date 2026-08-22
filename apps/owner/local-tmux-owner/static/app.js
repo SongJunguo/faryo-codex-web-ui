@@ -17,7 +17,7 @@
   const changesPanelModulePromise = ownerModule('changes-panel.mjs');
   const [
     { createApiClient, sessionApiPath, validateBrowserEnvelope },
-    { activityItemCollapsible, activityItemSummary, groupActivityBlocks },
+    { activityItemCollapsible, activityItemSummary, activityStatus, groupActivityBlocks, mergeCommandEvents },
     { createAttachmentController },
     { createHistoryController, isStructuredCapture },
     { createRichBlockController, shouldRenderEagerly },
@@ -162,6 +162,7 @@
   let lastCodexUpdateNotice = '';
   let markdownRenderRevision = 0, highlighterRenderFrame = 0;
   const markdownHtmlCache = new Map();
+  const activityDetailCache = new Map();
   const pendingAttachments = [];
   const routeMatch = location.pathname.match(/^\/(hp|pc|txy)(?:\/|$)/);
   const routeBase = routeMatch ? `/${routeMatch[1]}` : '';
@@ -1875,9 +1876,105 @@
     };
   }
 
+  function appendActivityDetailField(container, label, value, className = '') {
+    const text = String(value || '');
+    if (!text) return;
+    const section = document.createElement('section');
+    section.className = `activity-detail-field${className ? ` ${className}` : ''}`;
+    const heading = document.createElement('strong');
+    heading.textContent = label;
+    const body = document.createElement('pre');
+    body.textContent = text;
+    section.append(heading, body);
+    container.appendChild(section);
+  }
+
+  function renderActivityDetailBody(container, detail) {
+    container.replaceChildren();
+    container.dataset.state = 'ready';
+    const meta = document.createElement('div');
+    meta.className = `activity-detail-meta activity-status-${String(detail?.status || 'completed')}`;
+    const values = [String(detail?.status || '')];
+    if (Number.isFinite(Number(detail?.exitCode))) values.push(`exit ${Number(detail.exitCode)}`);
+    if (Number.isFinite(Number(detail?.durationMs))) values.push(`${Number(detail.durationMs)} ms`);
+    meta.textContent = values.filter(Boolean).join(' · ');
+    container.appendChild(meta);
+    if (detail?.type === 'command') {
+      appendActivityDetailField(container, 'Command', detail.command);
+      appendActivityDetailField(container, 'Working directory', detail.cwd);
+      appendActivityDetailField(container, 'Output', detail.output, 'activity-detail-output');
+    } else if (detail?.type === 'file_change') {
+      for (const [index, change] of (detail.changes || []).entries()) {
+        const changeNode = document.createElement('details');
+        changeNode.className = 'activity-file-change';
+        const summary = document.createElement('summary');
+        summary.textContent = `${String(change?.kind || 'change')} · ${String(change?.path || `file ${index + 1}`)}`;
+        changeNode.appendChild(summary);
+        if (change?.diff) {
+          const diff = document.createElement('pre');
+          diff.textContent = String(change.diff);
+          changeNode.appendChild(diff);
+        }
+        container.appendChild(changeNode);
+      }
+    } else if (detail?.type === 'search') {
+      appendActivityDetailField(container, 'Query', detail.query);
+      appendActivityDetailField(container, 'Results', detail.results);
+    } else {
+      appendActivityDetailField(container, 'Arguments', detail?.arguments);
+      appendActivityDetailField(container, 'Result', detail?.result);
+      appendActivityDetailField(container, 'Error', detail?.error, 'activity-detail-error');
+    }
+    if (detail?.truncated) {
+      const note = document.createElement('p');
+      note.className = 'activity-detail-note';
+      note.textContent = 'Large detail was bounded; the beginning and end are shown.';
+      container.appendChild(note);
+    }
+    if (container.children.length === 1) {
+      const note = document.createElement('p');
+      note.className = 'activity-detail-note';
+      note.textContent = 'No additional detail was returned by Codex.';
+      container.appendChild(note);
+    }
+  }
+
+  async function loadActivityDetail(container, item) {
+    if (!container || container.dataset.state === 'loading' || container.dataset.state === 'ready') return;
+    const session = selectedSession;
+    const itemId = String(item?.id || '');
+    const key = `${session}:${itemId}`;
+    const cached = activityDetailCache.get(key);
+    if (cached) {
+      renderActivityDetailBody(container, cached);
+      return;
+    }
+    container.dataset.state = 'loading';
+    container.textContent = 'Loading detail…';
+    try {
+      const payload = await api(apiPath(`/api/activity-detail?item=${encodeURIComponent(itemId)}`));
+      if (!container.isConnected || selectedSession !== session) return;
+      const detail = payload?.detail;
+      if (!detail || typeof detail !== 'object') throw new Error('Activity detail is unavailable');
+      activityDetailCache.set(key, detail);
+      while (activityDetailCache.size > 64) activityDetailCache.delete(activityDetailCache.keys().next().value);
+      renderActivityDetailBody(container, detail);
+    } catch (error) {
+      if (!container.isConnected || selectedSession !== session) return;
+      container.dataset.state = 'error';
+      container.textContent = userErrorMessage(error) || 'Activity detail is unavailable';
+    }
+  }
+
   function renderActivityCard(node, model) {
     if (node.dataset.faryoActivitySignature === model.signature) return;
     const wasOpen = Boolean(node.open);
+    const hadSignature = Boolean(node.dataset.faryoActivitySignature);
+    const hadAttention = node.dataset.faryoActivityAttention === 'true';
+    const openItems = new Set(
+      [...node.querySelectorAll(':scope > .compact-activity-list > details[open][data-activity-item-id]')]
+        .map((item) => item.dataset.activityItemId),
+    );
     const summary = document.createElement('summary');
     summary.className = 'compact-activity-title';
     const label = document.createElement('span');
@@ -1890,25 +1987,61 @@
     for (const [index, item] of (model.items || []).entries()) {
       const text = String(item?.text || '').trim();
       if (!text) continue;
-      if (activityItemCollapsible(text)) {
+      const status = activityStatus(item);
+      if (activityItemCollapsible(item)) {
         const detail = document.createElement('details');
-        detail.className = 'compact-activity-item compact-activity-item-long';
+        detail.className = `compact-activity-item compact-activity-item-long activity-status-${status}`;
+        detail.dataset.activityItemId = String(item?.id || `activity-${index}`);
         const detailSummary = document.createElement('summary');
-        detailSummary.textContent = activityItemSummary(text, index);
-        const body = document.createElement('pre');
-        body.textContent = text;
+        detailSummary.textContent = activityItemSummary(item, index);
+        const body = document.createElement(item?.activity?.detailAvailable ? 'div' : 'pre');
+        if (item?.activity?.detailAvailable) {
+          body.className = 'activity-detail-body';
+          body.textContent = 'Open to load detail';
+          body.dataset.state = 'idle';
+          detail.addEventListener('toggle', () => {
+            if (detail.open) void loadActivityDetail(body, item);
+          });
+        } else {
+          body.textContent = text;
+        }
         detail.append(detailSummary, body);
+        if (openItems.has(detail.dataset.activityItemId)) {
+          detail.open = true;
+          if (item?.activity?.detailAvailable) void loadActivityDetail(body, item);
+        }
         list.appendChild(detail);
       } else {
         const line = document.createElement('div');
-        line.className = 'compact-activity-item';
-        line.textContent = text;
+        line.className = `compact-activity-item activity-status-${status}`;
+        line.textContent = item?.activity ? activityItemSummary(item, index) : text;
         list.appendChild(line);
       }
     }
     node.replaceChildren(summary, list);
-    node.open = wasOpen;
+    node.open = wasOpen || (Boolean(model.openByDefault) && (!hadSignature || !hadAttention));
+    node.dataset.faryoActivityAttention = model.openByDefault ? 'true' : 'false';
     node.dataset.faryoActivitySignature = model.signature;
+  }
+
+  function renderCommandRow(node, model) {
+    if (node.dataset.faryoCommandSignature === model.signature) return;
+    const icon = document.createElement('span');
+    icon.className = 'command-timeline-icon';
+    icon.textContent = '/';
+    const content = document.createElement('span');
+    content.className = 'command-timeline-content';
+    const label = document.createElement('strong');
+    label.textContent = String(model.command?.label || model.command?.name || 'Codex command');
+    const summary = document.createElement('span');
+    summary.textContent = String(model.text || '');
+    content.append(label, summary);
+    const state = document.createElement('span');
+    state.className = 'command-timeline-state';
+    state.textContent = String(model.command?.status || 'completed');
+    node.className = `command-timeline-row command-status-${String(model.command?.status || 'completed')}`;
+    node.replaceChildren(icon, content, state);
+    node.dataset.faryoCommandSignature = model.signature;
   }
 
   function renderCompactOutput(text, rules, renderOptions = {}) {
@@ -1925,11 +2058,18 @@
           keyHint: item.id ? `appserver:${item.id}` : '',
           mutable: item.final === false,
           questionKey: String(item.questionKey || ''),
+          id: String(item.id || ''),
+          final: item.final !== false,
+          activity: item.activity && typeof item.activity === 'object' ? { ...item.activity } : null,
         }];
       })
       : [];
-    const structuredBlocks = groupActivityBlocks(structuredItems);
-    const rawBlocks = structuredBlocks.length ? structuredBlocks : rules.compactBlocks(text);
+    const structuredBlocks = structuredItems.length
+      ? mergeCommandEvents(groupActivityBlocks(structuredItems), renderOptions.commandEvents)
+      : [];
+    const rawBlocks = structuredBlocks.length
+      ? structuredBlocks
+      : mergeCommandEvents(rules.compactBlocks(text), renderOptions.commandEvents);
     if (!rawBlocks.length) rawBlocks.push({ kind: 'output', text: 'No output yet' });
     const streamKey = mode === 'streaming' ? String(renderOptions.streamKey || '') : '';
     if (streamKey && !structuredBlocks.length) {
@@ -1974,6 +2114,11 @@
         node.className = 'compact-activity-card';
         return node;
       }
+      if (model.kind === 'command') {
+        const node = document.createElement('section');
+        node.className = 'command-timeline-row';
+        return node;
+      }
       if (model.kind === 'process') {
         const node = document.createElement('section');
         node.className = 'compact-process-line';
@@ -2016,6 +2161,7 @@
       const node = output.children[index];
       if (!node) return;
       if (model.kind === 'activity') renderActivityCard(node, model);
+      if (model.kind === 'command') renderCommandRow(node, model);
       if (['output', 'user'].includes(model.kind)) {
         const descriptor = {
           signature: model.signature,
@@ -2102,7 +2248,10 @@
     capture = mergedConversationCapture(capture);
     const isStructured = structuredCapture(capture);
     const sourceText = String(capture.text || '');
-    const emptyStructured = isStructured && !sourceText.trim() && !capture.streaming;
+    const emptyStructured = isStructured
+      && !sourceText.trim()
+      && !capture.streaming
+      && !(Array.isArray(capture.commandEvents) && capture.commandEvents.length);
     const text = emptyStructured
       ? 'No messages yet. Ask Codex to start this conversation.'
       : sourceText || 'No output yet';
@@ -2129,6 +2278,7 @@
           renderCompactOutput(text, rules, {
             mode: isStructured && !capture.streaming ? 'settled' : 'streaming',
             messageBlocks: capture.messageBlocks,
+            commandEvents: capture.commandEvents,
             appServerStreaming: capture.captureSource === 'codex-app-server' && Boolean(capture.streaming),
             streamItemId: String(capture.streamItemId || ''),
             streamKey: capture.streamItemId

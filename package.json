@@ -22,6 +22,7 @@
     "test:owner-layout-browser": "node apps/owner/local-tmux-owner/tests/browser-owner-layout-smoke.mjs",
     "test:owner-interactions-browser": "node apps/owner/local-tmux-owner/tests/browser-structured-interactions.mjs",
     "test:owner-goal-browser": "node apps/owner/local-tmux-owner/tests/browser-goal-details.mjs",
+    "test:owner-activity-browser": "node apps/owner/local-tmux-owner/tests/browser-command-activity.mjs",
     "test:gateway-resume-browser": "node apps/gateway/server/tests/browser-resume-preflight.mjs",
     "typecheck:owner-ui": "tsc -p tsconfig.owner.json"
   },

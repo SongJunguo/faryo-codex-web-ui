@@ -112,6 +112,38 @@ main { grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 1; min-widt
 .compact-activity-item:last-child { border-bottom: 0; }
 .compact-activity-item-long > summary { padding: 1px 0; cursor: pointer; color: var(--muted); font-weight: 650; list-style-position: inside; }
 .compact-activity-item-long > pre { max-height: min(44vh, 420px); margin: 7px 0 2px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--muted); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; user-select: text; }
+.compact-activity-item.activity-status-running,
+.compact-activity-item.activity-status-waiting { border-left: 3px solid var(--accent); padding-left: 8px; }
+.compact-activity-item.activity-status-failed,
+.compact-activity-item.activity-status-declined { border-left: 3px solid #d45b5b; padding-left: 8px; color: color-mix(in srgb, #d45b5b 72%, var(--text)); }
+.activity-detail-body { display: grid; gap: 8px; max-height: min(58vh, 620px); margin: 7px 0 2px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--panel) 86%, transparent); overflow: auto; color: var(--muted); user-select: text; }
+.activity-detail-meta { width: max-content; max-width: 100%; padding: 2px 7px; border-radius: 999px; background: color-mix(in srgb, var(--line) 48%, transparent); font: 700 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-transform: capitalize; }
+.activity-detail-meta.activity-status-failed,
+.activity-detail-meta.activity-status-declined { color: #d45b5b; }
+.activity-detail-field { min-width: 0; display: grid; gap: 4px; }
+.activity-detail-field > strong { font: 700 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.activity-detail-field > pre,
+.activity-file-change > pre { max-height: min(42vh, 440px); margin: 0; padding: 8px 9px; border: 1px solid color-mix(in srgb, var(--line) 72%, transparent); border-radius: 7px; background: color-mix(in srgb, var(--panel2) 72%, transparent); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: var(--text); font: 500 calc(11px + var(--font-step))/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.activity-detail-error > pre { color: #d45b5b; }
+.activity-detail-note { margin: 0; font: 500 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--muted); }
+.activity-file-change { min-width: 0; border: 1px solid color-mix(in srgb, var(--line) 72%, transparent); border-radius: 7px; overflow: hidden; }
+.activity-file-change > summary { padding: 7px 8px; cursor: pointer; overflow-wrap: anywhere; color: var(--text); }
+.activity-file-change > pre { margin: 0 7px 7px; }
+.command-timeline-row { align-self: flex-start; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 8px; width: min(100%, 720px); min-height: 38px; padding: 6px 9px; border: 1px solid color-mix(in srgb, var(--line) 80%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--panel2) 58%, transparent); color: var(--muted); }
+.command-timeline-icon { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font: 800 14px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.command-timeline-content { min-width: 0; display: grid; gap: 1px; font-size: calc(12px + var(--font-step)); line-height: 1.35; }
+.command-timeline-content > strong { color: var(--text); font-size: .92em; }
+.command-timeline-content > span { overflow-wrap: anywhere; }
+.command-timeline-state { padding: 2px 6px; border-radius: 999px; background: color-mix(in srgb, var(--line) 52%, transparent); font: 700 10px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-transform: capitalize; }
+.command-status-running .command-timeline-state,
+.command-status-waiting .command-timeline-state { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.command-status-failed { border-color: color-mix(in srgb, #d45b5b 55%, var(--line)); }
+.command-status-failed .command-timeline-state { background: color-mix(in srgb, #d45b5b 14%, transparent); color: #d45b5b; }
+@media (max-width: 560px) {
+  .command-timeline-row { grid-template-columns: 22px minmax(0, 1fr); }
+  .command-timeline-state { grid-column: 2; width: max-content; }
+  .activity-detail-body { max-height: min(52vh, 520px); padding: 8px; }
+}
 .appserver-stream-progress { display: inline-flex; align-items: center; gap: 7px; }
 .appserver-stream-progress::before { content: ""; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); animation: appserver-stream-pulse 1.1s ease-in-out infinite; }
 @keyframes appserver-stream-pulse { 0%, 100% { opacity: .32; transform: scale(.82); } 50% { opacity: 1; transform: scale(1); } }

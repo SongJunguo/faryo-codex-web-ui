@@ -6,6 +6,7 @@ import {
   emptyConversationHistory,
   isStructuredCapture,
   mergeMessageBlocks,
+  normalizeMessageBlocks,
 } from "../static/owner/history-controller.mjs";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -130,6 +131,27 @@ test("structured capture detection stays source-specific", () => {
   assert.equal(isStructuredCapture({ captureSource: "codex-app-server" }), true);
   assert.equal(isStructuredCapture({ captureSource: "codex-empty" }), true);
   assert.equal(isStructuredCapture({ captureSource: "tmux" }), false);
+});
+
+test("typed activity metadata survives history normalization with an allowlist", () => {
+  const [block] = normalizeMessageBlocks([{
+    id: "tool-a",
+    turnKey: "turn-a",
+    kind: "process",
+    text: "Called a tool",
+    activity: {
+      type: "tool",
+      status: "completed",
+      title: "anonymous.tool",
+      summary: "Tool finished",
+      detailKind: "tool_call",
+      detailAvailable: true,
+      secret: "must not survive",
+    },
+  }]);
+  assert.equal(block.activity.type, "tool");
+  assert.equal(block.activity.detailAvailable, true);
+  assert.equal("secret" in block.activity, false);
 });
 
 test("app-server history refresh waits for a settled capture", async () => {

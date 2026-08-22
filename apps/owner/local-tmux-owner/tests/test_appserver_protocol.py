@@ -14,7 +14,7 @@ if str(APP_DIR) not in sys.path:
 from appserver_events import EventJournal
 from appserver_capabilities import inspect_schema_directory
 from appserver_history import conversation_history_page
-from appserver_rollout import activity_blocks, clear_activity_index_cache
+from appserver_rollout import activity_blocks, activity_detail as rollout_activity_detail, clear_activity_index_cache
 from appserver_protocol import (
     AppServerProtocolError,
     AppServerUnavailable,
@@ -22,7 +22,7 @@ from appserver_protocol import (
     decode_wire_message,
     parse_codex_version,
 )
-from appserver_session import WebSessionActor
+from appserver_session import WebSessionActor, activity_detail
 from appserver_transport import AsyncCodexAppServerClient
 
 
@@ -173,6 +173,36 @@ class ProtocolTest(unittest.TestCase):
         self.assertNotIn("private diff", rendered)
         self.assertEqual([block["kind"] for block in blocks], ["process", "process"])
         self.assertTrue(all(str(block["id"]).startswith("appserver-item-") for block in blocks))
+        self.assertEqual(blocks[0]["activity"]["type"], "command")
+        self.assertEqual(blocks[0]["activity"]["status"], "completed")
+        self.assertEqual(blocks[0]["activity"]["exitCode"], 0)
+        self.assertTrue(blocks[0]["activity"]["detailAvailable"])
+        self.assertEqual(blocks[1]["activity"]["type"], "file_change")
+        command_detail = activity_detail(actor.items["command_demo"].raw)
+        file_detail = activity_detail(actor.items["change_demo"].raw)
+        self.assertIn("private command output", command_detail["output"])
+        self.assertIn("private diff", file_detail["changes"][0]["diff"])
+
+    def test_unknown_activity_survives_as_a_safe_generic_card(self) -> None:
+        actor = WebSessionActor(session_id="session_demo", thread_id="thread_demo")
+        actor.apply(
+            "item/completed",
+            {
+                "threadId": "thread_demo",
+                "turnId": "turn_demo",
+                "item": {
+                    "id": "future_demo",
+                    "type": "futureCodexItem",
+                    "status": "completed",
+                    "secretField": "not projected",
+                },
+            },
+        )
+        blocks = actor.message_blocks()
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["activity"]["type"], "unknown")
+        self.assertFalse(blocks[0]["activity"]["detailAvailable"])
+        self.assertNotIn("secretField", repr(blocks[0]))
 
     def test_event_journal_replay_gap_reset_and_byte_bound(self) -> None:
         journal = EventJournal(max_events=3, max_bytes=800, epoch="epoch")
@@ -286,6 +316,14 @@ class ProtocolTest(unittest.TestCase):
             {
                 "type": "response_item",
                 "payload": {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_command",
+                    "output": [{"type": "text", "text": "anonymous command output"}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
                     "type": "custom_tool_call",
                     "name": "exec",
                     "id": "web_wrapper_anonymous",
@@ -346,11 +384,15 @@ class ProtocolTest(unittest.TestCase):
                 encoding="utf-8",
             )
             blocks = activity_blocks(str(rollout), [turn_id])
+            command_detail = rollout_activity_detail(str(rollout), blocks[0]["id"])
+            patch_detail = rollout_activity_detail(str(rollout), blocks[2]["id"])
 
         self.assertEqual([block["kind"] for block in blocks], ["process", "process", "process"])
-        self.assertTrue(blocks[0]["text"].startswith("Ran const result = await tools.exec_command"))
+        self.assertEqual(blocks[0]["text"], "Ran git status")
         self.assertEqual(blocks[1]["text"], "Searched anonymous documentation")
         self.assertEqual(blocks[2]["text"], "Edited app.py")
+        self.assertEqual(command_detail["output"], "anonymous command output")
+        self.assertIn("+new", patch_detail["changes"][0]["diff"])
         self.assertNotIn("private reasoning", "\n".join(block["text"] for block in blocks))
         self.assertTrue(all(block["turnKey"].startswith("appserver-turn-") for block in blocks))
         self.assertTrue(all(block["id"].startswith("appserver-item-") for block in blocks))
@@ -376,7 +418,7 @@ class ProtocolTest(unittest.TestCase):
                 handle.write(b"\n")
             blocks = activity_blocks(str(rollout), ["turn_incremental"])
         self.assertEqual(len(blocks), 1)
-        self.assertIn("tools.exec_command", blocks[0]["text"])
+        self.assertEqual(blocks[0]["text"], "Ran true")
 
     def test_history_merges_durable_activity_once_and_keeps_live_exit_status(self) -> None:
         turn_key = "appserver-turn-anonymous"

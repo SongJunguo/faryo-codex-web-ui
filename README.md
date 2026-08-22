@@ -49,9 +49,13 @@ in tmux as an explicit compatibility mode.
 - **Real answer streaming:** stable item identities, bounded delta batching,
   cursor replay and snapshot recovery show the answer while Codex is producing
   it, then converge in place to the durable rollout without duplicate blocks.
-- **Durable, quiet activity trace:** private reasoning placeholders stay hidden,
-  while commands, searches and edits survive Owner reconnects and collapse into
-  one inspectable Activity card per turn instead of flooding the conversation.
+- **Durable, typed activity trace:** private reasoning placeholders stay hidden;
+  commands, searches, edits and MCP calls retain their official type and state,
+  survive Owner reconnects, and collapse into one inspectable Activity card per
+  turn. Output and diffs load only when opened.
+- **Visible session commands:** `/rename`, `/model`, `/fast`, permissions and
+  other mutating Web commands appear as compact lifecycle rows without becoming
+  prompts or entering the model context.
 - **Long-conversation navigation:** structured history stays bounded, and a
   fast-scroll question rail jumps between prior user turns.
 - **Mobile immersive reading:** installable standalone PWA plus an explicit,
@@ -111,7 +115,7 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line and latest tagged source release: **[Faryo
+Current source line: **Faryo 1.11.0**. Latest tagged source release: **[Faryo
 1.10.3](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.3)**.
 
 ## Current Functionality
@@ -122,9 +126,12 @@ Current source line and latest tagged source release: **[Faryo
   `item` lifecycle events, including agent-message deltas and final items.
 - Renders App Server user, assistant and plan items as distinct keyed blocks.
   One live working/receiving state accompanies incremental answer text; empty
-  reasoning placeholders are omitted, and tool activity is grouped by turn in
-  a default-collapsed, inspectable card whose title reports command, edit and
-  search counts.
+  reasoning placeholders are omitted. Tool activity keeps a typed
+  command/file/search/MCP lifecycle and is grouped by turn in an inspectable
+  card whose title reports semantic counts. Completed groups default closed;
+  running, waiting and failed groups expose their state immediately. Command
+  output, tool results and file diffs are fetched through an authenticated,
+  no-store item endpoint only when a user expands that item.
 - Treats Codex rollout JSONL as the durable final source. An Owner restart can
   reconnect to the independent App Server service and recover both conversation
   messages and bounded tool activity without inventing a second message database.
@@ -255,6 +262,11 @@ micromark -> mdast -> CommonMark/GFM/math nodes -> safe HTML -> KaTeX
   menu and stale tabs cannot send keys into a newer state.
 - Reflects Codex `/rename` changes in the page title and session cards without
   renaming the underlying tmux session or requiring a reload.
+- Records browser-issued mutating slash commands as a small private lifecycle
+  (`running`, `waiting`, `completed`, or `failed`) and renders a compact system
+  row after the relevant turn. The row survives Owner/browser reloads, remains
+  outside Codex messages, and never stores Goal objectives or routine read-only
+  panels such as `/usage`.
 - Copies full answers and multi-message selections from in-memory original
   Markdown, and copies a selected formula as one original TeX expression
   instead of KaTeX's visual/MathML layers. Safe rich HTML is included when the

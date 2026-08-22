@@ -5,8 +5,10 @@ import {
   activityItemCollapsible,
   activityGroupSummary,
   activityItemSummary,
+  activityStatus,
   groupActivityBlocks,
   isReasoningPlaceholder,
+  mergeCommandEvents,
 } from "../static/owner/activity-groups.mjs";
 
 test("reasoning placeholders disappear and each turn gets one activity card", () => {
@@ -82,4 +84,50 @@ test("unscoped process notices remain visible instead of being misgrouped", () =
   assert.deepEqual(grouped, [
     { id: "gap", kind: "process", text: "… earlier turns not loaded …" },
   ]);
+});
+
+test("typed activity drives labels, attention and details without text regexes", () => {
+  const grouped = groupActivityBlocks([
+    { id: "q", turnKey: "turn-a", kind: "user", text: "Question" },
+    {
+      id: "tool-a",
+      turnKey: "turn-a",
+      kind: "process",
+      text: "localized text that has no legacy prefix",
+      final: true,
+      activity: {
+        type: "mcp",
+        status: "failed",
+        title: "reference.lookup",
+        detailAvailable: true,
+      },
+    },
+    { id: "a", turnKey: "turn-a", kind: "output", text: "Answer" },
+  ]);
+  const activity = grouped[1];
+  assert.equal(activity.summary, "Activity · 1 MCP call · 1 needs attention");
+  assert.equal(activity.openByDefault, true);
+  assert.equal(activityItemCollapsible(activity.items[0]), true);
+  assert.equal(activityItemSummary(activity.items[0]), "reference.lookup · failed");
+  assert.equal(activityStatus(activity.items[0]), "failed");
+});
+
+test("command lifecycle rows keep stable ids and anchor after their turn", () => {
+  const blocks = [
+    { id: "q", turnKey: "turn-a", kind: "user", text: "Question" },
+    { id: "a", turnKey: "turn-a", kind: "output", text: "Answer" },
+  ];
+  const merged = mergeCommandEvents(blocks, [{
+    id: "cmd_abcdefghijklmnop",
+    name: "/rename",
+    label: "Conversation title",
+    summary: "Renamed conversation to Anonymous",
+    status: "completed",
+    anchorKey: "turn-a",
+    startedAt: 10,
+    completedAt: 11,
+  }]);
+  assert.deepEqual(merged.map((item) => item.kind), ["user", "output", "command"]);
+  assert.equal(merged[2].keyHint, "command:cmd_abcdefghijklmnop");
+  assert.equal(merged[2].command.status, "completed");
 });
