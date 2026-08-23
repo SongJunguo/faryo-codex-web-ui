@@ -433,11 +433,22 @@ class InteractionService:
             timeline_event = None
             timeline_duplicate = False
             if self.command_timeline is not None:
+                anchor_resolver = getattr(self.runtime, "command_anchor_key", None)
+                anchor_key = ""
+                if callable(anchor_resolver):
+                    try:
+                        anchor_key = str(anchor_resolver(config) or "")
+                    except Exception:
+                        # Timeline placement is best-effort presentation data;
+                        # unavailable rollout history must not block a valid
+                        # local Codex command.
+                        anchor_key = ""
                 try:
                     timeline_event, timeline_duplicate = self.command_timeline.begin(
                         owner_key=self._command_owner_key(config),
                         request_id=request_id,
                         invocation=invocation,
+                        anchor_key=anchor_key,
                     )
                 except RuntimeError as exc:
                     raise InteractionServiceError(str(exc), HTTPStatus.CONFLICT) from exc

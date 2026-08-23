@@ -31,6 +31,29 @@ class AgentSessionTest(unittest.TestCase):
         self.assertEqual(server.clean_agent_launch_command("codex"), "codex")
         self.assertIsNone(server.clean_agent_launch_command("claude"))
 
+    def test_tui_command_anchor_uses_the_latest_durable_history_turn(self):
+        with (
+            mock.patch.object(server, "get_pane_cwd", return_value="/workspace"),
+            mock.patch.object(
+                server,
+                "active_agent_thread",
+                return_value={"rollout_path": "/private/rollout.jsonl"},
+            ),
+            mock.patch.object(
+                server,
+                "codex_history_state",
+                return_value={
+                    "turns": [
+                        {"key": "q-revision-0"},
+                        {"key": "q-revision-1"},
+                    ],
+                },
+            ),
+        ):
+            anchor = server.InteractionRuntime.command_anchor_key(self.config)
+
+        self.assertEqual(anchor, "q-revision-1")
+
     def test_owner_scrubs_stale_private_tmux_environment_without_touching_user_values(self):
         root = "/opt/faryo/versions/v1.5.3/app"
         shown = server.subprocess.CompletedProcess(

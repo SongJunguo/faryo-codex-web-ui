@@ -47,6 +47,7 @@ class Runtime:
         self.command_text = ""
         self.on_key = None
         self.codex = True
+        self.anchor_key = "q-anonymous-2"
 
     def monotonic(self):
         return self.now
@@ -96,6 +97,9 @@ class Runtime:
 
     def command_owner_key(self, _config):
         return "thread:anonymous"
+
+    def command_anchor_key(self, _config):
+        return self.anchor_key
 
 
 class InteractionServiceTest(unittest.TestCase):
@@ -398,7 +402,9 @@ class InteractionServiceTest(unittest.TestCase):
 
             self.assertEqual(closed["commandEvent"]["status"], "completed")
             self.assertIn("cancelled", closed["commandEvent"]["summary"])
-            self.assertEqual([event["name"] for event in store.public_events("thread:anonymous")], ["/model"])
+            events = store.public_events("thread:anonymous")
+            self.assertEqual([event["name"] for event in events], ["/model"])
+            self.assertEqual(events[0]["anchorKey"], "q-anonymous-2")
 
 
 if __name__ == "__main__":

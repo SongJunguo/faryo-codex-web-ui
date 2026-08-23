@@ -177,14 +177,19 @@ export function mergeCommandEvents(blocks, events) {
   const result = [...(Array.isArray(blocks) ? blocks : [])];
   const commands = normalizeCommandEvents(events);
   for (const command of commands) {
-    let position = result.length;
+    let position = 0;
     if (command.anchorKey) {
+      position = -1;
       for (let index = result.length - 1; index >= 0; index -= 1) {
         if (String(result[index]?.turnKey || "") === command.anchorKey) {
           position = index + 1;
           break;
         }
       }
+      // An anchored command belongs to a history page that may not be loaded.
+      // Hiding it until that page arrives preserves chronology; appending it to
+      // the live tail would make an old command look permanently current.
+      if (position < 0) continue;
     }
     while (
       position < result.length

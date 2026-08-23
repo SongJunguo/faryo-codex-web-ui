@@ -131,3 +131,35 @@ test("command lifecycle rows keep stable ids and anchor after their turn", () =>
   assert.equal(merged[2].keyHint, "command:cmd_abcdefghijklmnop");
   assert.equal(merged[2].command.status, "completed");
 });
+
+test("commands never stick to the live tail when their history anchor is absent", () => {
+  const blocks = [
+    { id: "q", turnKey: "turn-new", kind: "user", text: "New question" },
+    { id: "a", turnKey: "turn-new", kind: "output", text: "New answer" },
+  ];
+  const legacy = {
+    id: "cmd_legacyabcdefghijkl",
+    name: "/model",
+    label: "Model",
+    summary: "Model selection completed",
+    status: "completed",
+    anchorKey: "",
+    startedAt: 10,
+    completedAt: 11,
+  };
+  const unloaded = {
+    ...legacy,
+    id: "cmd_unloadedabcdefghij",
+    anchorKey: "turn-old",
+    startedAt: 12,
+  };
+
+  assert.deepEqual(
+    mergeCommandEvents(blocks, [legacy]).map((item) => item.kind),
+    ["command", "user", "output"],
+  );
+  assert.deepEqual(
+    mergeCommandEvents(blocks, [unloaded]).map((item) => item.kind),
+    ["user", "output"],
+  );
+});

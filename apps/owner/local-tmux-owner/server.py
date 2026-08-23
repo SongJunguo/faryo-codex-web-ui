@@ -2935,6 +2935,18 @@ class InteractionRuntime:
         return f"tui:{config.session}"
 
     @staticmethod
+    def command_anchor_key(config: Config) -> str:
+        """Return the latest durable TUI turn key used by history pagination."""
+        thread = active_agent_thread(config, get_pane_cwd(config))
+        history_path = str(thread.get("rollout_path") or "") if thread else ""
+        state = codex_history_state(history_path)
+        turns = state.get("turns") if isinstance(state, dict) else None
+        if not isinstance(turns, list) or not turns:
+            return ""
+        latest = turns[-1]
+        return str(latest.get("key") or "") if isinstance(latest, dict) else ""
+
+    @staticmethod
     def send_literal(config: Config, text: str) -> None:
         result = tmux(
             config,
