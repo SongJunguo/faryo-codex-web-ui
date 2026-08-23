@@ -65,10 +65,12 @@ Web-managed sessions receive stable `thread`/`turn`/`item` notifications from
 the persistent App Server service. Agent-message deltas update one keyed item;
 the final item replaces that same slot and later converges to Codex rollout
 JSONL. Empty private-reasoning placeholders are not projected as messages.
-Commands, searches and file changes remain inspectable but are grouped into one
-default-collapsed Activity card per turn. The replay journal is count- and
-byte-bounded and stores control metadata, not a second persistent copy of
-conversation bodies.
+Commands, searches and file changes remain inspectable. Each user message owns
+its following output even when Codex retains one long protocol turn, and
+contiguous activity batches stay at their chronological position instead of
+being hoisted into one old card. Completed batches default collapsed; an active
+batch exposes its current work. The replay journal is count- and byte-bounded
+and stores control metadata, not a second persistent copy of conversation bodies.
 
 The old `ThreadingHTTPServer` production entry has been removed. The remaining
 synchronous `codex_app_server.py` helper is intentionally restricted to

@@ -200,11 +200,20 @@ await withBrowser(
         await page.locator("form").evaluate((form) => form.requestSubmit());
       }
     }
-    await page.waitForFunction(() => (
-      document.documentElement.dataset.faryoAppReady === "1"
-      && document.querySelectorAll("#output > .compact-activity-card").length === 2
-      && document.querySelectorAll("#output > .command-timeline-row").length === 1
-    ), null, { timeout: 25_000 });
+    try {
+      await page.waitForFunction(() => (
+        document.documentElement.dataset.faryoAppReady === "1"
+        && document.querySelectorAll("#output > .compact-activity-card").length === 2
+        && document.querySelectorAll("#output > .command-timeline-row").length === 1
+      ), null, { timeout: 25_000 });
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        ready: document.documentElement.dataset.faryoAppReady || "",
+        kinds: [...document.querySelectorAll("#output > *")].map((node) => node.className),
+        text: document.querySelector("#output")?.textContent?.slice(-500) || "",
+      }));
+      throw new Error(`command activity fixture did not settle: ${JSON.stringify(state)}`, { cause: error });
+    }
 
     const initial = await page.evaluate(() => {
       const cards = [...document.querySelectorAll("#output > .compact-activity-card")];

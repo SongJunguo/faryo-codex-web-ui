@@ -29,7 +29,6 @@ from appserver_session import (
     WebSessionActor,
     activity_detail,
     browser_item_key,
-    browser_turn_key,
     user_message_text,
 )
 from appserver_transport import AsyncCodexAppServerClient, unix_socket_connector
@@ -374,7 +373,10 @@ class AppServerRuntime:
     async def _restore_sessions(self) -> None:
         client = self._require_client()
         for record in self.registry.values():
-            actor = self.actors.get(record.name) or WebSessionActor(session_id=record.name, thread_id=record.thread_id)
+            actor = self.actors.get(record.name)
+            if actor is None:
+                actor = WebSessionActor(session_id=record.name, thread_id=record.thread_id)
+                actor.require_durable_activity()
             self.actors[record.name] = actor
             try:
                 result = await client.rpc("thread/resume", {"threadId": record.thread_id})
@@ -407,6 +409,7 @@ class AppServerRuntime:
         actor = self.actors.get(record.name)
         if actor is None:
             actor = WebSessionActor(session_id=record.name, thread_id=record.thread_id)
+            actor.require_durable_activity()
             self.actors[record.name] = actor
         for event in actor.apply(method, params):
             if event.kind == "item.delta" and event.item_id:
@@ -682,6 +685,7 @@ class AppServerRuntime:
             reserved=self.reserved_names(),
         )
         actor = WebSessionActor(session_id=record.name, thread_id=clean_thread_id)
+        actor.require_durable_activity()
         if isinstance(thread, Mapping):
             actor.hydrate(thread)
         self.actors[record.name] = actor
@@ -849,13 +853,12 @@ class AppServerRuntime:
         if actor.interaction is not None:
             raise AppServerRuntimeError("another Codex interaction is already pending")
         owner_key = self._command_owner_key(record)
-        anchor_turn = actor.active_turn_id or next(reversed(actor.turns), "")
         try:
             timeline_event, timeline_duplicate = self.command_timeline.begin(
                 owner_key=owner_key,
                 request_id=request_id,
                 invocation=invocation,
-                anchor_key=browser_turn_key(anchor_turn) if anchor_turn else "",
+                anchor_key=actor.command_anchor_key(),
             )
         except command_timeline.CommandTimelineError as exc:
             raise AppServerRuntimeError(str(exc)) from exc

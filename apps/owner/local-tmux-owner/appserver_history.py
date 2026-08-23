@@ -6,7 +6,7 @@ import hashlib
 import re
 from typing import Any, Callable, Mapping
 
-from appserver_session import browser_turn_key, message_block
+from appserver_session import browser_question_key, message_block
 import codex_history
 
 
@@ -14,6 +14,9 @@ PUBLIC_BLOCK_KINDS = {"user", "output", "process", "plan"}
 PUBLIC_ACTIVITY_TYPES = {"command", "file_change", "search", "mcp", "tool", "image", "compaction", "error", "unknown"}
 PUBLIC_ACTIVITY_STATUSES = {"running", "waiting", "completed", "failed", "declined"}
 _PROCESS_EXIT_RE = re.compile(r"\s+·\s+exit\s+-?\d+$", re.I)
+_QUESTION_KEY_RE = re.compile(r"appserver-question-[0-9a-f]{16}\Z")
+_QUESTION_REFERENCE_RE = re.compile(r"appserver-turn-[0-9a-f]{16}:[0-9a-f]{64}:[1-9][0-9]*\Z")
+_DURABLE_ACTIVITY_TYPES = {"command", "file_change", "search", "mcp", "tool"}
 
 
 def _public_activity(value: Any) -> dict[str, Any] | None:
@@ -61,8 +64,15 @@ def _public_block(value: Mapping[str, Any]) -> dict[str, Any] | None:
         "final": value.get("final") is not False,
     }
     if kind == "user":
-        block["questionKey"] = turn_key
-    elif kind == "process":
+        question_key = str(value.get("questionKey") or "")
+        if _QUESTION_KEY_RE.fullmatch(question_key) is None:
+            question_key = browser_question_key(item_id)
+        block["questionKey"] = question_key
+        block["segmentKey"] = question_key
+    else:
+        segment_key = str(value.get("segmentKey") or "")
+        block["segmentKey"] = segment_key if _QUESTION_KEY_RE.fullmatch(segment_key) else turn_key
+    if kind == "process":
         activity = _public_activity(value.get("activity"))
         if activity is not None:
             block["activity"] = activity
@@ -74,28 +84,64 @@ def _project_message_blocks(
     preview_chars: int,
     durable_activity: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    public_blocks = [
+        block
+        for value in values
+        if (block := _public_block(value)) is not None
+    ]
+    first_question_by_turn: dict[str, str] = {}
+    question_counts_by_turn: dict[str, dict[str, int]] = {}
+    segment_by_question_reference: dict[str, str] = {}
+    for block in public_blocks:
+        if block["kind"] == "user":
+            turn_key = str(block["turnKey"])
+            question_key = str(block["questionKey"])
+            first_question_by_turn.setdefault(turn_key, question_key)
+            digest = hashlib.sha256(str(block["text"]).strip().encode("utf-8")).hexdigest()
+            turn_counts = question_counts_by_turn.setdefault(turn_key, {})
+            occurrence = int(turn_counts.get(digest) or 0) + 1
+            turn_counts[digest] = occurrence
+            segment_by_question_reference[f"{turn_key}:{digest}:{occurrence}"] = question_key
     grouped: dict[str, list[dict[str, Any]]] = {}
     order: list[str] = []
-    for value in values:
-        block = _public_block(value)
-        if block is None:
-            continue
+    current_turn_key = ""
+    current_segment_key = ""
+    segments_by_turn: dict[str, list[str]] = {}
+    for block in public_blocks:
         turn_key = str(block["turnKey"])
-        if turn_key not in grouped:
-            grouped[turn_key] = []
-            order.append(turn_key)
-        grouped[turn_key].append(block)
+        if turn_key != current_turn_key:
+            current_turn_key = turn_key
+            current_segment_key = first_question_by_turn.get(turn_key, turn_key)
+        if block["kind"] == "user":
+            current_segment_key = str(block["questionKey"])
+        elif _QUESTION_KEY_RE.fullmatch(str(block.get("segmentKey") or "")):
+            current_segment_key = str(block["segmentKey"])
+        segment_key = current_segment_key or turn_key
+        block["segmentKey"] = segment_key
+        if segment_key not in grouped:
+            grouped[segment_key] = []
+            order.append(segment_key)
+            segments_by_turn.setdefault(turn_key, []).append(segment_key)
+        grouped[segment_key].append(block)
     durable_grouped: dict[str, list[dict[str, Any]]] = {}
     for value in durable_activity or []:
         block = _public_block(value)
         if block is None or block["kind"] != "process":
             continue
         turn_key = str(block["turnKey"])
-        if turn_key in grouped:
-            durable_grouped.setdefault(turn_key, []).append(block)
+        segment_key = str(block.get("segmentKey") or "")
+        question_reference = str(value.get("questionReference") or "")
+        if _QUESTION_REFERENCE_RE.fullmatch(question_reference):
+            segment_key = segment_by_question_reference.get(question_reference, segment_key)
+        candidates = segments_by_turn.get(turn_key, [])
+        if segment_key not in grouped:
+            segment_key = candidates[-1] if candidates else ""
+        if segment_key:
+            block["segmentKey"] = segment_key
+            durable_grouped.setdefault(segment_key, []).append(block)
     projected: list[dict[str, Any]] = []
-    for turn_key in order:
-        blocks = _merge_turn_activity(grouped[turn_key], durable_grouped.get(turn_key, []))
+    for segment_key in order:
+        blocks = _merge_turn_activity(grouped[segment_key], durable_grouped.get(segment_key, []))
         text = _turn_text(blocks)
         question = next(
             (str(block["text"]) for block in blocks if block["kind"] == "user"),
@@ -103,8 +149,8 @@ def _project_message_blocks(
         )
         if text:
             projected.append({
-                "id": turn_key,
-                "key": turn_key,
+                "id": segment_key,
+                "key": segment_key,
                 "preview": codex_history.history_preview(question, preview_chars),
                 "text": text,
                 "blocks": blocks,
@@ -123,6 +169,29 @@ def _process_fingerprint(block: Mapping[str, Any]) -> str:
     return text
 
 
+def _process_type(block: Mapping[str, Any]) -> str:
+    activity = _public_activity(block.get("activity"))
+    if activity is not None:
+        return str(activity["type"])
+    text = str(block.get("text") or "").strip()
+    if text.startswith(("Ran ", "Running ")):
+        return "command"
+    if text.startswith(("Edited ", "Editing ")):
+        return "file_change"
+    if text.startswith(("Searched ", "Searching the web ")):
+        return "search"
+    if text.startswith(("Called ", "Calling ")):
+        return "tool"
+    return "unknown"
+
+
+def _process_status(block: Mapping[str, Any]) -> str:
+    activity = _public_activity(block.get("activity"))
+    if activity is not None:
+        return str(activity["status"])
+    return "running" if block.get("final") is False else "completed"
+
+
 def _merge_turn_activity(
     current: list[dict[str, Any]],
     durable: list[dict[str, Any]],
@@ -132,12 +201,14 @@ def _merge_turn_activity(
     if not durable:
         return current
     live_process = [block for block in current if block["kind"] == "process"]
+    live_positions = {str(block["id"]): index for index, block in enumerate(live_process)}
     live_by_id = {str(block["id"]): block for block in live_process}
     live_by_fingerprint: dict[str, list[dict[str, Any]]] = {}
     for block in live_process:
         live_by_fingerprint.setdefault(_process_fingerprint(block), []).append(block)
     merged_process: list[dict[str, Any]] = []
     used_ids: set[str] = set()
+    last_matched_live_position = -1
     for durable_block in durable:
         item_id = str(durable_block["id"])
         live = live_by_id.get(item_id)
@@ -151,8 +222,22 @@ def _merge_turn_activity(
         selected = live or durable_block
         merged_process.append(selected)
         if live is not None:
-            used_ids.add(str(live["id"]))
-    merged_process.extend(block for block in live_process if str(block["id"]) not in used_ids)
+            live_id = str(live["id"])
+            used_ids.add(live_id)
+            last_matched_live_position = max(last_matched_live_position, live_positions.get(live_id, -1))
+    durable_types = {_process_type(block) for block in durable}
+    for index, block in enumerate(live_process):
+        if str(block["id"]) in used_ids:
+            continue
+        activity_type = _process_type(block)
+        status = _process_status(block)
+        if (
+            activity_type not in _DURABLE_ACTIVITY_TYPES
+            or activity_type not in durable_types
+            or status in {"running", "waiting", "failed", "declined"}
+            or (last_matched_live_position >= 0 and index > last_matched_live_position)
+        ):
+            merged_process.append(block)
 
     first_process = next(
         (index for index, block in enumerate(current) if block["kind"] == "process"),
@@ -170,14 +255,25 @@ def _merge_turn_activity(
 
 def _turn_blocks(turn: Mapping[str, Any]) -> list[dict[str, Any]]:
     turn_id = str(turn.get("id") or "")
+    items = [item for item in (turn.get("items") or []) if isinstance(item, Mapping)]
+    first_question_key = next(
+        (
+            browser_question_key(str(item.get("id") or ""))
+            for item in items
+            if item.get("type") == "userMessage" and item.get("id")
+        ),
+        "",
+    )
+    segment_key = first_question_key
     blocks: list[dict[str, Any]] = []
-    for item in turn.get("items") or []:
-        if not isinstance(item, Mapping):
-            continue
+    for item in items:
+        if item.get("type") == "userMessage" and item.get("id"):
+            segment_key = browser_question_key(str(item["id"]))
         block = message_block(
             item,
             item_id=str(item.get("id") or ""),
             turn_id=turn_id,
+            segment_key=segment_key,
             final=True,
         )
         if block is not None:
@@ -190,13 +286,6 @@ def _turn_text(blocks: list[dict[str, Any]]) -> str:
         f"{'›' if block['kind'] == 'user' else '•'} {block['text']}"
         for block in blocks
     )
-
-
-def _question_text(turn: Mapping[str, Any]) -> str:
-    for item in turn.get("items") or []:
-        if isinstance(item, dict) and item.get("type") == "userMessage":
-            return codex_history.user_message_text(item)
-    return ""
 
 
 def _revision(thread_id: str, turns: list[dict[str, Any]]) -> str:
@@ -226,22 +315,12 @@ def conversation_history_page(
     structured_values = [item for item in (message_blocks or []) if isinstance(item, Mapping)]
     projected = _project_message_blocks(structured_values, preview_chars, durable_activity)
     if not projected:
+        fallback_blocks: list[dict[str, Any]] = []
         for raw_turn in snapshot.get("turns") or []:
             if not isinstance(raw_turn, Mapping):
                 continue
-            turn_id = str(raw_turn.get("id") or "")
-            blocks = _turn_blocks(raw_turn)
-            text = _turn_text(blocks)
-            if not turn_id or not text:
-                continue
-            question = _question_text(raw_turn)
-            projected.append({
-                "id": turn_id,
-                "key": browser_turn_key(turn_id),
-                "preview": codex_history.history_preview(question, preview_chars),
-                "text": text,
-                "blocks": blocks,
-            })
+            fallback_blocks.extend(_turn_blocks(raw_turn))
+        projected = _project_message_blocks(fallback_blocks, preview_chars, durable_activity)
 
     revision = _revision(thread_id, projected)
     total = len(projected)

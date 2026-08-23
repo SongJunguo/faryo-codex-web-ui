@@ -86,40 +86,44 @@ export function activityGroupSummary(items) {
 export function groupActivityBlocks(value) {
   const source = Array.isArray(value) ? value : [];
   const result = [];
-  const groups = new Map();
+  const groups = [];
+  let activeGroup = null;
 
   for (const item of source) {
     const kind = String(item?.kind || "");
     const text = String(item?.text || "").trim();
     if (kind !== "process") {
       result.push(item);
+      activeGroup = null;
       continue;
     }
     if (!text || isReasoningPlaceholder(text)) continue;
 
     const turnKey = String(item?.turnKey || "");
-    if (!turnKey) {
+    const segmentKey = String(item?.segmentKey || turnKey);
+    if (!segmentKey) {
       result.push(item);
       continue;
     }
 
-    let group = groups.get(turnKey);
-    if (!group) {
-      group = {
-        id: `activity-${turnKey}`,
+    if (!activeGroup || activeGroup.segmentKey !== segmentKey) {
+      const firstItemId = String(item?.id || groups.length);
+      activeGroup = {
+        id: `activity-${segmentKey}-${firstItemId}`,
         turnKey,
+        segmentKey,
         kind: "activity",
         role: "process",
         text: "",
         items: [],
-        keyHint: `activity:${turnKey}`,
+        keyHint: `activity:${segmentKey}:${firstItemId}`,
         mutable: true,
         final: true,
         revision: 0,
         openByDefault: false,
       };
-      groups.set(turnKey, group);
-      result.push(group);
+      groups.push(activeGroup);
+      result.push(activeGroup);
     }
     const normalized = {
       id: String(item?.id || ""),
@@ -127,14 +131,14 @@ export function groupActivityBlocks(value) {
       final: item?.final !== false,
       activity: item?.activity && typeof item.activity === "object" ? { ...item.activity } : null,
     };
-    group.items.push(normalized);
-    group.final = group.final && normalized.final;
-    group.revision = Math.max(group.revision, Number(item?.revision || 0));
+    activeGroup.items.push(normalized);
+    activeGroup.final = activeGroup.final && normalized.final;
+    activeGroup.revision = Math.max(activeGroup.revision, Number(item?.revision || 0));
     const status = activityStatus(normalized);
-    if (["failed", "declined", "waiting", "running"].includes(status)) group.openByDefault = true;
+    if (["failed", "declined", "waiting", "running"].includes(status)) activeGroup.openByDefault = true;
   }
 
-  for (const group of groups.values()) {
+  for (const group of groups) {
     group.text = group.items
       .map((item) => [item.id, activityType(item), activityStatus(item), item.activity?.title || item.text].join("\u0000"))
       .join("\n");
@@ -181,9 +185,35 @@ export function mergeCommandEvents(blocks, events) {
     if (command.anchorKey) {
       position = -1;
       for (let index = result.length - 1; index >= 0; index -= 1) {
-        if (String(result[index]?.turnKey || "") === command.anchorKey) {
+        const item = result[index];
+        const exactItem = String(item?.id || "") === command.anchorKey
+          || (Array.isArray(item?.items) && item.items.some((entry) => String(entry?.id || "") === command.anchorKey));
+        if (exactItem) {
           position = index + 1;
           break;
+        }
+      }
+      if (position < 0 && command.anchorKey.startsWith("appserver-question-")) {
+        for (let index = result.length - 1; index >= 0; index -= 1) {
+          if (
+            String(result[index]?.segmentKey || "") === command.anchorKey
+            || String(result[index]?.questionKey || "") === command.anchorKey
+          ) {
+            position = index + 1;
+            break;
+          }
+        }
+      }
+      if (position < 0) {
+        const matching = result
+          .map((item, index) => ({ item, index }))
+          .filter(({ item }) => String(item?.turnKey || "") === command.anchorKey);
+        const segments = [...new Set(matching.map(({ item }) => String(item?.segmentKey || "")))];
+        if (segments.length > 1) {
+          const latestSegment = segments[segments.length - 1];
+          position = matching.find(({ item }) => String(item?.segmentKey || "") === latestSegment)?.index ?? -1;
+        } else if (matching.length) {
+          position = matching[matching.length - 1].index + 1;
         }
       }
       // An anchored command belongs to a history page that may not be loaded.

@@ -344,11 +344,18 @@ def browser_turn_key(turn_id: str) -> str:
     return "appserver-turn-" + hashlib.sha256(turn_id.encode("utf-8")).hexdigest()[:16]
 
 
+def browser_question_key(item_id: str) -> str:
+    """Return a privacy-safe browser identity for one user message."""
+
+    return "appserver-question-" + hashlib.sha256(item_id.encode("utf-8")).hexdigest()[:16]
+
+
 def message_block(
     item: Mapping[str, Any],
     *,
     item_id: str,
     turn_id: str,
+    segment_key: str = "",
     text_override: str | None = None,
     revision: int = 0,
     final: bool = True,
@@ -372,9 +379,15 @@ def message_block(
     if not item_id or not turn_id or not text:
         return None
     turn_key = browser_turn_key(turn_id)
+    resolved_segment_key = str(segment_key or "").strip()
+    if kind == "user":
+        resolved_segment_key = browser_question_key(item_id)
+    if not resolved_segment_key:
+        resolved_segment_key = turn_key
     block: dict[str, Any] = {
         "id": browser_item_key(item_id),
         "turnKey": turn_key,
+        "segmentKey": resolved_segment_key,
         "kind": kind,
         "role": role,
         "text": text,
@@ -382,7 +395,7 @@ def message_block(
         "final": bool(final),
     }
     if kind == "user":
-        block["questionKey"] = turn_key
+        block["questionKey"] = resolved_segment_key
     elif kind == "process":
         activity = activity_projection(item, final=final)
         if activity is not None:
@@ -436,6 +449,7 @@ class WebSessionActor:
         self.goal: dict[str, Any] | None = None
         self.interaction: dict[str, Any] | None = None
         self.interaction_revision = 0
+        self.durable_activity_required = False
         self.thread: dict[str, Any] = {"id": thread_id}
         self.revision = 0
 
@@ -667,8 +681,14 @@ class WebSessionActor:
             "goal": self.goal,
             "interaction": self.interaction,
             "interactionRevision": f"appserver:{self.interaction_revision}",
+            "durableActivityRequired": self.durable_activity_required,
             "revision": self.revision,
         }
+
+    def require_durable_activity(self) -> None:
+        """Mark thread/read as potentially incomplete after Owner recovery."""
+
+        self.durable_activity_required = True
 
     def set_interaction(self, interaction: Mapping[str, Any]) -> ActorEvent:
         self.interaction = dict(interaction)
@@ -703,12 +723,28 @@ class WebSessionActor:
 
     def message_blocks(self) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
+        first_question_by_turn: dict[str, str] = {}
         for item_id in self.item_order:
             projection = self.items[item_id]
+            if projection.type == "userMessage" and projection.turn_id:
+                first_question_by_turn.setdefault(
+                    projection.turn_id,
+                    browser_question_key(projection.id),
+                )
+        current_turn_id = ""
+        current_segment_key = ""
+        for item_id in self.item_order:
+            projection = self.items[item_id]
+            if projection.turn_id != current_turn_id:
+                current_turn_id = projection.turn_id
+                current_segment_key = first_question_by_turn.get(current_turn_id, "")
+            if projection.type == "userMessage":
+                current_segment_key = browser_question_key(projection.id)
             block = message_block(
                 projection.raw,
                 item_id=projection.id,
                 turn_id=projection.turn_id,
+                segment_key=current_segment_key,
                 text_override=None if projection.type == "userMessage" else projection.text,
                 revision=projection.revision,
                 final=projection.final,
@@ -716,6 +752,15 @@ class WebSessionActor:
             if block is not None:
                 blocks.append(block)
         return blocks
+
+    def command_anchor_key(self) -> str:
+        """Anchor a local command to the exact last visible browser item."""
+
+        blocks = self.message_blocks()
+        if blocks:
+            return str(blocks[-1].get("id") or "")
+        turn_id = self.active_turn_id or next(reversed(self.turns), "")
+        return browser_turn_key(turn_id) if turn_id else ""
 
     def messages(self) -> list[tuple[str, str]]:
         return [(str(block["role"]), str(block["text"])) for block in self.message_blocks()]

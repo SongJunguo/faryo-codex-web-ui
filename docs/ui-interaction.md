@@ -107,13 +107,16 @@ and then resume the independently collapsible Live panel.
 
 For Codex App Server sessions, private reasoning items do not become repeated
 `Working` messages. The active turn has one transient working/receiving status.
-Commands, searches and edits are grouped by turn into a closed Activity card.
-Its title reports the command, edit and search counts, so collapsed activity is
-not mistaken for missing history. Opening the card exposes the audit trail in a
-bounded scroll area; long command rows remain closed one level deeper until
-explicitly selected. After an Owner reconnect, missing `thread/read` command
-items are reconstructed from the durable rollout by stable turn and call IDs;
-tool output and private reasoning bodies are not projected.
+Each user message is a separate question-navigation target even if Codex keeps
+several messages inside one protocol turn. Commands, searches and edits form a
+new Activity card for each contiguous batch, so interim assistant output and
+later work retain their actual timeline order. A card title reports command,
+edit and search counts; completed cards default closed while active or failed
+work exposes its state. Long command rows remain closed one level deeper until
+explicitly selected. After an Owner reconnect, missing `thread/read` activity
+is reconstructed from the durable rollout and aligned in Owner memory without
+returning message-derived identities to the browser. Tool output and private
+reasoning bodies are not projected.
 
 ## Owner Session View
 

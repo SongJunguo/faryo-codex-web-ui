@@ -11,7 +11,7 @@ import {
   mergeCommandEvents,
 } from "../static/owner/activity-groups.mjs";
 
-test("reasoning placeholders disappear and each turn gets one activity card", () => {
+test("reasoning placeholders disappear and each contiguous activity run gets one card", () => {
   const blocks = [
     { id: "q1", turnKey: "turn-1", kind: "user", text: "Question" },
     ...Array.from({ length: 50 }, (_, index) => ({
@@ -63,6 +63,43 @@ test("collapsed activity titles expose what history contains", () => {
     ]),
     "Activity · 2 commands · 1 edit · 1 search",
   );
+});
+
+test("one protocol turn keeps activity beside each user-message segment", () => {
+  const blocks = [
+    { id: "q1", turnKey: "turn-shared", segmentKey: "question-1", questionKey: "question-1", kind: "user", text: "First" },
+    { id: "run-1", turnKey: "turn-shared", segmentKey: "question-1", kind: "process", text: "Ran first · exit 0" },
+    { id: "a1", turnKey: "turn-shared", segmentKey: "question-1", kind: "output", text: "First answer" },
+    { id: "q2", turnKey: "turn-shared", segmentKey: "question-2", questionKey: "question-2", kind: "user", text: "Second" },
+    { id: "edit-2", turnKey: "turn-shared", segmentKey: "question-2", kind: "process", text: "Edited second.txt" },
+    { id: "a2", turnKey: "turn-shared", segmentKey: "question-2", kind: "output", text: "Second answer" },
+  ];
+
+  const grouped = groupActivityBlocks(blocks);
+  assert.deepEqual(
+    grouped.map((item) => [item.kind, item.segmentKey]),
+    [
+      ["user", "question-1"],
+      ["activity", "question-1"],
+      ["output", "question-1"],
+      ["user", "question-2"],
+      ["activity", "question-2"],
+      ["output", "question-2"],
+    ],
+  );
+});
+
+test("assistant output starts a new chronological activity batch inside one segment", () => {
+  const grouped = groupActivityBlocks([
+    { id: "q", turnKey: "turn-shared", segmentKey: "question-1", kind: "user", text: "Question" },
+    { id: "run-1", turnKey: "turn-shared", segmentKey: "question-1", kind: "process", text: "Ran first · exit 0" },
+    { id: "note", turnKey: "turn-shared", segmentKey: "question-1", kind: "output", text: "Interim result" },
+    { id: "edit-2", turnKey: "turn-shared", segmentKey: "question-1", kind: "process", text: "Edited second.txt" },
+  ]);
+
+  assert.deepEqual(grouped.map((item) => item.kind), ["user", "activity", "output", "activity"]);
+  assert.equal(grouped[1].summary, "Activity · 1 command");
+  assert.equal(grouped[3].summary, "Activity · 1 edit");
 });
 
 test("long command details default to a concise label", () => {
@@ -161,5 +198,53 @@ test("commands never stick to the live tail when their history anchor is absent"
   assert.deepEqual(
     mergeCommandEvents(blocks, [unloaded]).map((item) => item.kind),
     ["user", "output"],
+  );
+});
+
+test("exact command anchors stay fixed when later activity arrives in the same protocol turn", () => {
+  const blocks = [
+    { id: "q1", turnKey: "turn-shared", segmentKey: "question-1", kind: "user", text: "First" },
+    { id: "run-1", turnKey: "turn-shared", segmentKey: "question-1", kind: "process", text: "Ran first · exit 0" },
+    { id: "q2", turnKey: "turn-shared", segmentKey: "question-2", kind: "user", text: "Second" },
+    { id: "run-2", turnKey: "turn-shared", segmentKey: "question-2", kind: "process", text: "Running second", final: false },
+  ];
+  const command = {
+    id: "cmd_exactabcdefghijkl",
+    name: "/rename",
+    label: "Conversation title",
+    summary: "Renamed conversation",
+    status: "completed",
+    anchorKey: "run-1",
+    startedAt: 10,
+    completedAt: 11,
+  };
+
+  assert.deepEqual(
+    groupActivityBlocks(mergeCommandEvents(blocks, [command])).map((item) => item.kind),
+    ["user", "activity", "command", "user", "activity"],
+  );
+});
+
+test("legacy turn anchors move before the newest segment instead of sticking to the tail", () => {
+  const blocks = [
+    { id: "q1", turnKey: "turn-shared", segmentKey: "question-1", kind: "user", text: "First" },
+    { id: "a1", turnKey: "turn-shared", segmentKey: "question-1", kind: "output", text: "First answer" },
+    { id: "q2", turnKey: "turn-shared", segmentKey: "question-2", kind: "user", text: "Second" },
+    { id: "a2", turnKey: "turn-shared", segmentKey: "question-2", kind: "output", text: "Second answer" },
+  ];
+  const command = {
+    id: "cmd_legacyturnabcdefg",
+    name: "/rename",
+    label: "Conversation title",
+    summary: "Renamed conversation",
+    status: "completed",
+    anchorKey: "turn-shared",
+    startedAt: 10,
+    completedAt: 11,
+  };
+
+  assert.deepEqual(
+    mergeCommandEvents(blocks, [command]).map((item) => item.kind),
+    ["user", "output", "command", "user", "output"],
   );
 });

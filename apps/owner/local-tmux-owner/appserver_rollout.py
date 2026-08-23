@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -18,7 +19,7 @@ import threading
 from typing import Any, Iterable, Mapping
 
 from appserver_session import activity_detail as project_activity_detail
-from appserver_session import browser_item_key, message_block
+from appserver_session import browser_item_key, browser_turn_key, message_block
 
 
 ACTIVITY_INDEX_MAX_PATHS = 16
@@ -81,6 +82,9 @@ def _empty_state(identity: tuple[int, int]) -> dict[str, Any]:
         "records": {},
         "callTurns": {},
         "callItems": {},
+        "callQuestionReferences": {},
+        "activeQuestionReferences": {},
+        "questionDigestCounts": {},
         "itemRecords": {},
     }
 
@@ -89,6 +93,18 @@ def _custom_call_identity(payload: Mapping[str, Any]) -> tuple[str, str]:
     call_id = str(payload.get("call_id") or payload.get("id") or "").strip()
     item_id = str(payload.get("id") or payload.get("call_id") or "").strip()
     return call_id, item_id
+
+
+def _user_message_digest(payload: Mapping[str, Any]) -> str:
+    if payload.get("type") != "message" or payload.get("role") != "user":
+        return ""
+    parts = [
+        str(value["text"])
+        for value in (payload.get("content") or [])
+        if isinstance(value, Mapping) and isinstance(value.get("text"), str)
+    ]
+    text = "\n".join(parts).strip()
+    return hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
 
 
 def _record_item_range(
@@ -145,6 +161,9 @@ def _update_index(path: Path) -> dict[str, Any] | None:
         records = state.setdefault("records", {})
         call_turns = state.setdefault("callTurns", {})
         call_items = state.setdefault("callItems", {})
+        call_question_references = state.setdefault("callQuestionReferences", {})
+        active_question_references = state.setdefault("activeQuestionReferences", {})
+        question_digest_counts = state.setdefault("questionDigestCounts", {})
         state.setdefault("itemRecords", {})
         complete_offset = offset
         try:
@@ -166,21 +185,40 @@ def _update_index(path: Path) -> dict[str, Any] | None:
                     payload = _event_payload(event)
                     outer_type = str(event.get("type") or "")
                     payload_type = str(payload.get("type") or "") if payload is not None else ""
+                    if (
+                        outer_type == "response_item"
+                        and payload_type == "message"
+                        and payload is not None
+                        and payload.get("role") == "user"
+                    ):
+                        question_turn_id = _custom_turn_id(payload, active_turn_id)
+                        question_digest = _user_message_digest(payload)
+                        if question_turn_id and question_digest:
+                            turn_counts = question_digest_counts.setdefault(question_turn_id, {})
+                            occurrence = int(turn_counts.get(question_digest) or 0) + 1
+                            turn_counts[question_digest] = occurrence
+                            active_question_references[question_turn_id] = (
+                                f"{browser_turn_key(question_turn_id)}:{question_digest}:{occurrence}"
+                            )
                     turn_id = _activity_turn_id(event, active_turn_id)
                     item_id = ""
+                    question_reference = str(active_question_references.get(turn_id) or "")
                     if outer_type == "response_item" and payload_type == "custom_tool_call" and payload is not None:
                         call_id, item_id = _custom_call_identity(payload)
                         if call_id and turn_id:
                             call_turns[call_id] = turn_id
                             call_items[call_id] = item_id
+                            call_question_references[call_id] = question_reference
                     elif outer_type == "response_item" and payload_type == "custom_tool_call_output" and payload is not None:
                         call_id = str(payload.get("call_id") or "").strip()
                         turn_id = str(call_turns.get(call_id) or "")
                         item_id = str(call_items.get(call_id) or call_id)
+                        question_reference = str(call_question_references.get(call_id) or active_question_references.get(turn_id) or "")
                     elif outer_type == "event_msg" and payload_type in {"patch_apply_end", "web_search_end"} and payload is not None:
                         item_id = str(payload.get("call_id") or "").strip()
+                        question_reference = str(active_question_references.get(turn_id) or "")
                     if turn_id:
-                        records.setdefault(turn_id, []).append((start, complete_offset))
+                        records.setdefault(turn_id, []).append((start, complete_offset, question_reference))
                         _record_item_range(state, item_id, turn_id, start, complete_offset)
         except OSError:
             return state
@@ -281,7 +319,7 @@ def _web_search_block(payload: Mapping[str, Any], turn_id: str) -> dict[str, Any
     return message_block(item, item_id=item_id, turn_id=turn_id, final=True)
 
 
-def _project_record(raw_line: bytes, expected_turn_id: str) -> dict[str, Any] | None:
+def _project_record(raw_line: bytes, expected_turn_id: str, question_reference: str = "") -> dict[str, Any] | None:
     try:
         event = json.loads(raw_line.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -291,15 +329,24 @@ def _project_record(raw_line: bytes, expected_turn_id: str) -> dict[str, Any] | 
         return None
     outer_type = str(event.get("type") or "")
     payload_type = str(payload.get("type") or "")
+    block: dict[str, Any] | None = None
     if outer_type == "response_item" and payload_type == "custom_tool_call":
         turn_id = _custom_turn_id(payload, expected_turn_id)
-        return _custom_tool_block(payload, turn_id) if turn_id == expected_turn_id else None
-    if outer_type == "event_msg" and payload_type == "patch_apply_end":
+        block = _custom_tool_block(payload, turn_id) if turn_id == expected_turn_id else None
+    elif outer_type == "event_msg" and payload_type == "patch_apply_end":
         turn_id = str(payload.get("turn_id") or expected_turn_id).strip()
-        return _patch_block(payload, turn_id) if turn_id == expected_turn_id else None
-    if outer_type == "event_msg" and payload_type == "web_search_end":
-        return _web_search_block(payload, expected_turn_id)
-    return None
+        block = _patch_block(payload, turn_id) if turn_id == expected_turn_id else None
+    elif outer_type == "event_msg" and payload_type == "web_search_end":
+        block = _web_search_block(payload, expected_turn_id)
+    if block is not None and re.fullmatch(
+        r"appserver-turn-[0-9a-f]{16}:[0-9a-f]{64}:[1-9][0-9]*",
+        question_reference,
+    ):
+        # This server-internal digest aligns rollout-only activity with the
+        # corresponding App Server user item. It is removed before history is
+        # returned to the authenticated browser.
+        block["questionReference"] = question_reference
+    return block
 
 
 def activity_blocks(history_path: str | None, turn_ids: Iterable[str]) -> list[dict[str, Any]]:
@@ -321,10 +368,12 @@ def activity_blocks(history_path: str | None, turn_ids: Iterable[str]) -> list[d
     try:
         with path.open("rb") as handle:
             for turn_id in selected:
-                for start, end in records.get(turn_id) or []:
+                for record in records.get(turn_id) or []:
+                    start, end, *metadata = record
+                    question_reference = str(metadata[0] or "") if metadata else ""
                     handle.seek(int(start))
                     raw_line = handle.read(max(0, int(end) - int(start))).rstrip(b"\n")
-                    block = _project_record(raw_line, turn_id)
+                    block = _project_record(raw_line, turn_id, question_reference)
                     if block is not None:
                         blocks.append(block)
     except (OSError, TypeError, ValueError):

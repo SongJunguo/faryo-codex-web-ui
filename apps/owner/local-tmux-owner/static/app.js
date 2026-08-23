@@ -2076,6 +2076,7 @@
           kind,
           text: value,
           turnKey: String(item.turnKey || ''),
+          segmentKey: String(item.segmentKey || ''),
           keyHint: item.id ? `appserver:${item.id}` : '',
           mutable: item.final === false,
           questionKey: String(item.questionKey || ''),
@@ -2086,7 +2087,7 @@
       })
       : [];
     const structuredBlocks = structuredItems.length
-      ? mergeCommandEvents(groupActivityBlocks(structuredItems), renderOptions.commandEvents)
+      ? groupActivityBlocks(mergeCommandEvents(structuredItems, renderOptions.commandEvents))
       : [];
     const rawBlocks = structuredBlocks.length
       ? structuredBlocks

@@ -50,6 +50,7 @@ export function normalizeMessageBlocks(value) {
     const block = {
       id: String(item?.id || `anonymous-${index}`),
       turnKey: String(item?.turnKey || ""),
+      segmentKey: String(item?.segmentKey || ""),
       questionKey: String(item?.questionKey || ""),
       kind,
       role: String(item?.role || ""),

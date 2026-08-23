@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+import re
 import sys
 import tempfile
 import unittest
@@ -183,6 +184,52 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("private command output", command_detail["output"])
         self.assertIn("private diff", file_detail["changes"][0]["diff"])
 
+    def test_one_protocol_turn_projects_each_user_message_as_a_conversation_segment(self) -> None:
+        actor = WebSessionActor(session_id="session_demo", thread_id="thread_demo")
+        actor.apply(
+            "turn/started",
+            {"threadId": "thread_demo", "turn": {"id": "turn_shared", "status": "inProgress"}},
+        )
+        items = [
+            {"id": "user_one", "type": "userMessage", "content": [{"type": "text", "text": "First question"}]},
+            {"id": "command_one", "type": "commandExecution", "command": "true", "status": "completed", "exitCode": 0},
+            {"id": "answer_one", "type": "agentMessage", "text": "First answer"},
+            {"id": "user_two", "type": "userMessage", "content": [{"type": "text", "text": "Second question"}]},
+            {"id": "change_two", "type": "fileChange", "status": "completed", "changes": [{"path": "/workspace/demo.txt", "kind": "update"}]},
+            {"id": "answer_two", "type": "agentMessage", "text": "Second answer"},
+        ]
+        for item in items:
+            actor.apply(
+                "item/completed",
+                {"threadId": "thread_demo", "turnId": "turn_shared", "item": item},
+            )
+
+        blocks = actor.message_blocks()
+        first_key = blocks[0]["questionKey"]
+        second_key = blocks[3]["questionKey"]
+        history = conversation_history_page(
+            actor.snapshot(),
+            thread_id="thread_demo",
+            message_blocks=blocks,
+            limit=12,
+            max_page_turns=24,
+            page_char_budget=100_000,
+            preview_chars=80,
+            updated_at=lambda: "now",
+        )
+
+        self.assertNotEqual(first_key, second_key)
+        self.assertTrue(first_key.startswith("appserver-question-"))
+        self.assertEqual([block["segmentKey"] for block in blocks[:3]], [first_key] * 3)
+        self.assertEqual([block["segmentKey"] for block in blocks[3:]], [second_key] * 3)
+        self.assertEqual(actor.command_anchor_key(), blocks[-1]["id"])
+        self.assertEqual(history["totalTurns"], 2)
+        self.assertEqual([question["key"] for question in history["questions"]], [first_key, second_key])
+        self.assertEqual(
+            [[block["kind"] for block in turn["blocks"]] for turn in history["turns"]],
+            [["user", "process", "output"], ["user", "process", "output"]],
+        )
+
     def test_unknown_activity_survives_as_a_safe_generic_card(self) -> None:
         actor = WebSessionActor(session_id="session_demo", thread_id="thread_demo")
         actor.apply(
@@ -203,6 +250,12 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(blocks[0]["activity"]["type"], "unknown")
         self.assertFalse(blocks[0]["activity"]["detailAvailable"])
         self.assertNotIn("secretField", repr(blocks[0]))
+
+    def test_durable_activity_recovery_is_explicit_not_the_live_default(self) -> None:
+        actor = WebSessionActor(session_id="session_demo", thread_id="thread_demo")
+        self.assertFalse(actor.snapshot()["durableActivityRequired"])
+        actor.require_durable_activity()
+        self.assertTrue(actor.snapshot()["durableActivityRequired"])
 
     def test_event_journal_replay_gap_reset_and_byte_bound(self) -> None:
         journal = EventJournal(max_events=3, max_bytes=800, epoch="epoch")
@@ -304,12 +357,32 @@ class ProtocolTest(unittest.TestCase):
             {
                 "type": "response_item",
                 "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "id": "question_one",
+                    "content": [{"type": "input_text", "text": "Anonymous question"}],
+                    "internal_chat_message_metadata_passthrough": metadata,
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
                     "type": "custom_tool_call",
                     "name": "exec",
                     "id": "command_anonymous",
                     "call_id": "call_command",
                     "status": "completed",
                     "input": "const result = await tools.exec_command({cmd: 'git status'}); text(result.output);",
+                    "internal_chat_message_metadata_passthrough": metadata,
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "id": "question_two",
+                    "content": [{"type": "input_text", "text": "Anonymous follow-up"}],
                     "internal_chat_message_metadata_passthrough": metadata,
                 },
             },
@@ -386,6 +459,34 @@ class ProtocolTest(unittest.TestCase):
             blocks = activity_blocks(str(rollout), [turn_id])
             command_detail = rollout_activity_detail(str(rollout), blocks[0]["id"])
             patch_detail = rollout_activity_detail(str(rollout), blocks[2]["id"])
+            history = conversation_history_page(
+                {"turns": []},
+                thread_id="thread_anonymous",
+                message_blocks=[
+                    {
+                        "id": "user-one",
+                        "turnKey": blocks[0]["turnKey"],
+                        "questionKey": "appserver-question-1111111111111111",
+                        "segmentKey": "appserver-question-1111111111111111",
+                        "kind": "user",
+                        "text": "Anonymous question",
+                    },
+                    {
+                        "id": "user-two",
+                        "turnKey": blocks[0]["turnKey"],
+                        "questionKey": "appserver-question-2222222222222222",
+                        "segmentKey": "appserver-question-2222222222222222",
+                        "kind": "user",
+                        "text": "Anonymous follow-up",
+                    },
+                ],
+                durable_activity=blocks,
+                limit=12,
+                max_page_turns=24,
+                page_char_budget=100_000,
+                preview_chars=80,
+                updated_at=lambda: "now",
+            )
 
         self.assertEqual([block["kind"] for block in blocks], ["process", "process", "process"])
         self.assertEqual(blocks[0]["text"], "Ran git status")
@@ -396,6 +497,20 @@ class ProtocolTest(unittest.TestCase):
         self.assertNotIn("private reasoning", "\n".join(block["text"] for block in blocks))
         self.assertTrue(all(block["turnKey"].startswith("appserver-turn-") for block in blocks))
         self.assertTrue(all(block["id"].startswith("appserver-item-") for block in blocks))
+        self.assertTrue(
+            all(
+                re.fullmatch(
+                    r"appserver-turn-[0-9a-f]{16}:[0-9a-f]{64}:[1-9][0-9]*",
+                    block["questionReference"],
+                )
+                for block in blocks
+            )
+        )
+        self.assertNotEqual(blocks[0]["questionReference"], blocks[1]["questionReference"])
+        self.assertIn("Ran git status", [block["text"] for block in history["turns"][0]["blocks"]])
+        self.assertNotIn("Searched anonymous documentation", [block["text"] for block in history["turns"][0]["blocks"]])
+        self.assertIn("Searched anonymous documentation", [block["text"] for block in history["turns"][1]["blocks"]])
+        self.assertTrue(all("questionReference" not in block for turn in history["turns"] for block in turn["blocks"]))
 
     def test_rollout_activity_index_waits_for_complete_records_and_catches_up(self) -> None:
         event = {
@@ -419,6 +534,42 @@ class ProtocolTest(unittest.TestCase):
             blocks = activity_blocks(str(rollout), ["turn_incremental"])
         self.assertEqual(len(blocks), 1)
         self.assertEqual(blocks[0]["text"], "Ran true")
+
+    def test_rollout_question_references_are_scoped_by_protocol_turn(self) -> None:
+        events = []
+        for index in (1, 2):
+            turn_id = f"turn_same_question_{index}"
+            events.extend([
+                {"type": "event_msg", "payload": {"type": "task_started", "turn_id": turn_id}},
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "id": f"question_{index}",
+                        "content": [{"type": "input_text", "text": "Same anonymous question"}],
+                        "internal_chat_message_metadata_passthrough": {"turn_id": turn_id},
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "exec",
+                        "id": f"command_{index}",
+                        "input": "await tools.exec_command({cmd: 'true'});",
+                        "internal_chat_message_metadata_passthrough": {"turn_id": turn_id},
+                    },
+                },
+                {"type": "event_msg", "payload": {"type": "task_complete", "turn_id": turn_id}},
+            ])
+        with tempfile.TemporaryDirectory() as root:
+            rollout = Path(root) / "rollout-same-question.jsonl"
+            rollout.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+            blocks = activity_blocks(str(rollout), ["turn_same_question_1", "turn_same_question_2"])
+
+        self.assertEqual(len(blocks), 2)
+        self.assertNotEqual(blocks[0]["questionReference"], blocks[1]["questionReference"])
 
     def test_history_merges_durable_activity_once_and_keeps_live_exit_status(self) -> None:
         turn_key = "appserver-turn-anonymous"
@@ -500,6 +651,81 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("Ran git status · exit 0", [block["text"] for block in blocks])
         self.assertEqual(sum(block["text"] == "Searched anonymous docs" for block in blocks), 1)
         self.assertIn("Edited app.py", [block["text"] for block in blocks])
+
+    def test_history_keeps_durable_activity_in_its_user_message_segment(self) -> None:
+        turn_key = "appserver-turn-shared"
+        first_key = "appserver-question-1111111111111111"
+        second_key = "appserver-question-2222222222222222"
+        history = conversation_history_page(
+            {"turns": []},
+            thread_id="thread_anonymous",
+            message_blocks=[
+                {"id": "user-one", "turnKey": turn_key, "questionKey": first_key, "segmentKey": first_key, "kind": "user", "text": "First"},
+                {"id": "answer-one", "turnKey": turn_key, "segmentKey": first_key, "kind": "output", "text": "First answer"},
+                {"id": "user-two", "turnKey": turn_key, "questionKey": second_key, "segmentKey": second_key, "kind": "user", "text": "Second"},
+                {"id": "answer-two", "turnKey": turn_key, "segmentKey": second_key, "kind": "output", "text": "Second answer"},
+            ],
+            durable_activity=[
+                {"id": "command-one", "turnKey": turn_key, "segmentKey": first_key, "kind": "process", "text": "Ran first"},
+                {"id": "change-two", "turnKey": turn_key, "segmentKey": second_key, "kind": "process", "text": "Edited second.txt"},
+            ],
+            limit=12,
+            max_page_turns=24,
+            page_char_budget=100_000,
+            preview_chars=80,
+            updated_at=lambda: "now",
+        )
+
+        self.assertEqual(history["totalTurns"], 2)
+        self.assertIn("Ran first", [block["text"] for block in history["turns"][0]["blocks"]])
+        self.assertNotIn("Edited second.txt", [block["text"] for block in history["turns"][0]["blocks"]])
+        self.assertIn("Edited second.txt", [block["text"] for block in history["turns"][1]["blocks"]])
+
+    def test_durable_recovery_suppresses_unmatched_completed_wrapper_duplicates(self) -> None:
+        turn_key = "appserver-turn-recovered"
+        question_key = "appserver-question-3333333333333333"
+        history = conversation_history_page(
+            {"turns": []},
+            thread_id="thread_recovered",
+            message_blocks=[
+                {
+                    "id": "user-recovered",
+                    "turnKey": turn_key,
+                    "questionKey": question_key,
+                    "segmentKey": question_key,
+                    "kind": "user",
+                    "text": "Recovered question",
+                },
+                {
+                    "id": "wrapper-live",
+                    "turnKey": turn_key,
+                    "segmentKey": question_key,
+                    "kind": "process",
+                    "text": "Ran wrapper command",
+                    "final": True,
+                    "activity": {"type": "command", "status": "completed", "title": "wrapper command"},
+                },
+            ],
+            durable_activity=[
+                {
+                    "id": "command-durable",
+                    "turnKey": turn_key,
+                    "segmentKey": question_key,
+                    "kind": "process",
+                    "text": "Ran actual command",
+                    "final": True,
+                    "activity": {"type": "command", "status": "completed", "title": "actual command"},
+                },
+            ],
+            limit=12,
+            max_page_turns=24,
+            page_char_budget=100_000,
+            preview_chars=80,
+            updated_at=lambda: "now",
+        )
+        process = [block["text"] for block in history["turns"][0]["blocks"] if block["kind"] == "process"]
+
+        self.assertEqual(process, ["Ran actual command"])
 
 
 class TransportTest(unittest.IsolatedAsyncioTestCase):

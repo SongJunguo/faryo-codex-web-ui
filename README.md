@@ -115,7 +115,7 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line: **Faryo 1.11.3**. Latest tagged source release: **[Faryo
+Current source line: **Faryo 1.11.4**. Latest tagged source release: **[Faryo
 1.10.3](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.3)**.
 
 ## Current Functionality
@@ -126,9 +126,11 @@ Current source line: **Faryo 1.11.3**. Latest tagged source release: **[Faryo
   `item` lifecycle events, including agent-message deltas and final items.
 - Renders App Server user, assistant and plan items as distinct keyed blocks.
   One live working/receiving state accompanies incremental answer text; empty
-  reasoning placeholders are omitted. Tool activity keeps a typed
-  command/file/search/MCP lifecycle and is grouped by turn in an inspectable
-  card whose title reports semantic counts. Completed groups default closed;
+  reasoning placeholders are omitted. Each user message becomes its own
+  navigable conversation segment, even when Codex keeps several messages in one
+  protocol turn. Tool activity keeps a typed command/file/search/MCP lifecycle
+  and is grouped into chronological contiguous batches whose titles report
+  semantic counts. Completed groups default closed;
   running, waiting and failed groups expose their state immediately. Command
   output, tool results and file diffs are fetched through an authenticated,
   no-store item endpoint only when a user expands that item. A closed group
@@ -139,8 +141,8 @@ Current source line: **Faryo 1.11.3**. Latest tagged source release: **[Faryo
   messages and bounded tool activity without inventing a second message database.
 - Keeps Codex TUI threads in tmux as a compatibility backend; tmux capture remains
   conservative live evidence and never becomes a competing writer.
-- Keeps the initial payload to at most 12 recent complete turns, then exposes
-  older turns through a revision-bound cursor API. Formula-heavy answers cannot
+- Keeps the initial payload to at most 12 recent complete question segments,
+  then exposes older segments through a revision-bound cursor API. Formula-heavy answers cannot
   silently erase the complete question index.
 - Separates stable conversation history from the transient `Live from tmux`
   execution panel.

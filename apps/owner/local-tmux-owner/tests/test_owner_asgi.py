@@ -358,6 +358,7 @@ class OwnerAsgiTest(unittest.TestCase):
             "snapshot": {
                 "lifecycle": "idle",
                 "revision": 3,
+                "durableActivityRequired": True,
                 "turns": [
                     {
                         "id": "turn_demo",

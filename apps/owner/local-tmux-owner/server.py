@@ -1802,8 +1802,11 @@ def web_conversation_history_page(
     snapshot = capture.get("snapshot") if isinstance(capture.get("snapshot"), dict) else {}
     thread_id = str(record.get("threadId") or "")
     durable_activity: list[dict[str, Any]] = []
-    thread = codex_thread_by_id(thread_id) if thread_id else None
-    history_path = str(thread.get("rollout_path") or "") if thread else ""
+    if snapshot.get("durableActivityRequired") is True and thread_id:
+        thread = codex_thread_by_id(thread_id)
+        history_path = str(thread.get("rollout_path") or "") if thread else ""
+    else:
+        history_path = ""
     if history_path and rollout_thread_id_from_path(history_path) == thread_id:
         turn_ids = [
             str(turn.get("id") or "")

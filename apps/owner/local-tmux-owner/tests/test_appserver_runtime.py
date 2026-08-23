@@ -259,7 +259,7 @@ class RuntimeTest(unittest.TestCase):
         self.assertTrue(duplicate["duplicate"])
         self.assertEqual(capture["messages"], [("user", "Question"), ("assistant", "Answer $x^2$.")])
         self.assertEqual([block["kind"] for block in capture["messageBlocks"]], ["user", "output"])
-        self.assertTrue(capture["messageBlocks"][0]["questionKey"].startswith("appserver-turn-"))
+        self.assertTrue(capture["messageBlocks"][0]["questionKey"].startswith("appserver-question-"))
         self.assertNotIn(started["threadId"], repr(capture["messageBlocks"]))
         self.assertEqual(capture["snapshot"]["lifecycle"], "idle")
         self.assertTrue(closed["closed"])
