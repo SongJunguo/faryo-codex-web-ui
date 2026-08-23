@@ -273,11 +273,24 @@ await withBrowser({
   let explicitFolderSheet = {};
   for (let attempt = 0; attempt < 80; attempt += 1) {
     await delay(50);
-    explicitFolderSheet = await evaluate(`(() => ({open:document.getElementById('modal')?.classList.contains('open')||false,title:document.getElementById('modalTitle')?.textContent||'',body:document.getElementById('modalBody')?.textContent||'',folder:Boolean(document.querySelector('#modalChoices .directory-row-folder')),primary:[...document.querySelectorAll('#modalActions button')].some(item=>item.textContent==='Start resumed Codex here')}))()`);
+    explicitFolderSheet = await evaluate(`(() => {
+      const sheet = document.querySelector('#modal .sheet');
+      const bounds = sheet?.getBoundingClientRect();
+      const viewportWidth = window.visualViewport?.width || innerWidth;
+      return {
+        open: document.getElementById('modal')?.classList.contains('open') || false,
+        title: document.getElementById('modalTitle')?.textContent || '',
+        body: document.getElementById('modalBody')?.textContent || '',
+        folder: Boolean(document.querySelector('#modalChoices .directory-row-folder')),
+        primary: [...document.querySelectorAll('#modalActions button')].some(item => item.textContent === 'Start resumed Codex here'),
+        sheetFitsViewport: Boolean(bounds && bounds.left >= -0.5 && bounds.right <= viewportWidth + 0.5),
+      };
+    })()`);
     if (explicitFolderSheet.open && explicitFolderSheet.primary) break;
   }
   if (!explicitFolderSheet.open || explicitFolderSheet.title !== 'Choose working directory'
-    || !explicitFolderSheet.body.includes('saved Codex conversation') || !explicitFolderSheet.folder || !explicitFolderSheet.primary) {
+    || !explicitFolderSheet.body.includes('saved Codex conversation') || !explicitFolderSheet.folder
+    || !explicitFolderSheet.primary || !explicitFolderSheet.sheetFitsViewport) {
     throw new Error(`Explicit resume folder picker did not open: ${JSON.stringify(explicitFolderSheet)}`);
   }
   const backendPicker = await evaluate(`(() => ({

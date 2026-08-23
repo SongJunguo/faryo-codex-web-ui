@@ -115,7 +115,7 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line: **Faryo 1.11.1**. Latest tagged source release: **[Faryo
+Current source line: **Faryo 1.11.2**. Latest tagged source release: **[Faryo
 1.10.3](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.3)**.
 
 ## Current Functionality

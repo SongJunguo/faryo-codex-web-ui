@@ -429,6 +429,8 @@ main {
 }
 .sheet {
   width: min(100%, 420px);
+  min-width: 0;
+  max-width: 100%;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
