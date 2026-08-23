@@ -145,9 +145,13 @@ there is no automatic child-count cap. The remembered Hidden toggle is the only
 automatic dot-directory visibility rule. The picker
 uses `..` as the first Folders row for parent navigation, collapses long
 breadcrumbs, filters the current page without recursive search, and keeps
-`Start Codex here` fixed outside the scrolling list. Directory choices
-still come from Owner, carry its HMAC selection token, and are revalidated by
-Owner before the Web-managed session starts. The same sheet offers Default,
+`Start Codex here` fixed outside the scrolling list. On phone-sized viewports,
+the backend and context controls start inside a compact `Session settings`
+disclosure whose summary always shows the effective choices. The folder list
+therefore owns the remaining height; opening the disclosure remains an explicit
+way to change either setting. Desktop keeps the full controls visible.
+Directory choices still come from Owner, carry its HMAC selection token, and
+are revalidated by Owner before the Web-managed session starts. The same sheet offers Default,
 372K, 1M and a bounded
 custom K-token context window. Default sends no override. Custom values are
 validated independently by Gateway and Owner, then become one-off Codex

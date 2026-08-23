@@ -1,6 +1,6 @@
 # Faryo Codebase Architecture and Product Benchmark
 
-Updated: 2026-08-20
+Updated: 2026-08-24
 Baseline: v1.2.1 before the v1.2.2 immersive-display work
 
 ## Executive conclusion
@@ -115,6 +115,42 @@ candidates, not undeclared v1.2.2 dependencies.
 | [Harness Remote](https://github.com/giuliastro/harness-remote) | Capability discovery, one machine endpoint, PWA plus Capacitor APK, adaptive phone/desktop navigation, completion sound and dependency notes | Adopt capability-driven controls and consider Capacitor only after web push/background limits become material |
 | [Tether](https://github.com/larsderidder/tether) | Attach-first supervision, explicit human-in-the-loop gates, CLI/API automation and optional messaging bridges | Faryo already shares the attach-first principle. Chat bridges would expand the attack surface and are not a current priority |
 | [Codex Remote](https://github.com/RealDyllon/codex-remote) | Codex App Server bridge, trusted QR pairing, live streaming, photos, notification routing, reasoning and permission controls | Continue moving safe lifecycle/metadata work to official App Server APIs; keep current identity layers instead of adding a relay/QR trust system now |
+
+## 2026-08-24 focused reference refresh
+
+The current DeepSeek Harness, YepAnywhere and HAPI designs reinforce the staged
+approach rather than justify a framework rewrite:
+
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) gives a
+  pending Session and Workspace stable frontend identities and routes every new
+  session through one Workspace runtime action. Faryo should apply the same
+  principle narrowly: route, workstation, directory, backend, context and
+  request generation should become one launch-state owner before more launch
+  options are added.
+- [YepAnywhere](https://github.com/kzahel/yepanywhere) presents the selected
+  project as a compact summary and expands its chooser only on demand. Faryo's
+  phone launch sheet now uses the same interaction principle independently:
+  directory browsing owns the height while backend/context settings remain one
+  tap away and keep their effective values visible.
+- [HAPI](https://github.com/tiann/hapi) separates machine, directory, agent,
+  model, permissions and actions into focused New Session components. Faryo has
+  fewer choices, but its remaining launch sheet is now the strongest next Preact
+  island candidate because it still mixes asynchronous directory navigation,
+  route switching and submission state inside `workbench.js`.
+
+The resulting priority order is:
+
+1. Keep the shipped mobile progressive-disclosure layout and test its closed,
+   expanded and value-update states at phone and desktop widths.
+2. Extract a pure launch-state model with a generation key so a late directory
+   or workstation response cannot overwrite a newer choice.
+3. Move the launch sheet as one bounded Preact island only if that extraction
+   removes the imperative ownership paths; do not migrate the whole Gateway.
+4. Add pinned/favourite directories only after the canonical-path and signed
+   selection-token rules remain shared with Recent and Folders.
+
+The review is clean-room: no third-party implementation or visual asset is
+copied, and the existing license boundaries remain unchanged.
 
 Faryo should not compete by matching the total feature count of these much larger
 projects. Its differentiators are exceptionally faithful Markdown/TeX reading,

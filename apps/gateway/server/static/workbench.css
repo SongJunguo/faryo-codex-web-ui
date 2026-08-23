@@ -686,6 +686,51 @@ main {
 .directory-hidden-toggle:disabled {
   opacity: 0.55;
 }
+.launch-settings {
+  min-width: 0;
+}
+.launch-settings-summary {
+  display: none;
+  min-width: 0;
+  list-style: none;
+}
+.launch-settings-summary::-webkit-details-marker {
+  display: none;
+}
+.launch-settings-summary-copy {
+  min-width: 0;
+}
+.launch-settings-summary strong,
+.launch-settings-summary small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.launch-settings-summary strong {
+  color: var(--text);
+  font: 800 12px/1.2 var(--app-font);
+}
+.launch-settings-summary small {
+  margin-top: 2px;
+  color: var(--muted);
+  font: 650 10px/1.2 var(--app-font);
+}
+.launch-settings-chevron {
+  color: var(--muted);
+  font-size: 17px;
+  transition: transform 0.15s ease;
+}
+.launch-settings[open] .launch-settings-chevron {
+  transform: rotate(180deg);
+}
+.launch-settings-body {
+  display: grid;
+  gap: 9px;
+}
+.launch-settings:not([open]) > .launch-settings-body {
+  display: none;
+}
 .workstation-picker,
 .session-backend-picker {
   min-width: 0;
@@ -937,6 +982,7 @@ main {
 }
 .modal.directory-mode .choice-list {
   display: block;
+  flex: 1 1 auto;
   padding: 0 2px 10px;
   overflow-y: auto;
 }
@@ -1076,7 +1122,34 @@ main {
     min-height: 50px;
   }
   .directory-toolbar {
+    gap: 7px;
     margin-bottom: 7px;
+  }
+  .launch-settings-summary {
+    min-height: 42px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--panel2) 76%, transparent);
+    cursor: pointer;
+  }
+  .launch-settings-summary:hover,
+  .launch-settings-summary:focus-visible {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+    background: color-mix(in srgb, var(--accent) 8%, var(--panel2));
+    outline: none;
+  }
+  .launch-settings-body {
+    max-height: min(40dvh, 320px);
+    margin-top: 7px;
+    padding-right: 2px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
   }
   .directory-hidden-toggle {
     min-width: 82px;

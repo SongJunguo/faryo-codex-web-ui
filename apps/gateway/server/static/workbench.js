@@ -481,8 +481,11 @@ function resetSheetMode() {
     breadcrumb = document.getElementById("directoryBreadcrumb"),
     search = document.getElementById("directorySearch"),
     hiddenToggle = document.getElementById("directoryHiddenToggle"),
+    launchSettings = document.getElementById("launchSettings"),
     backendHelp = document.getElementById("sessionBackendHelp"),
+    backendSummary = document.getElementById("sessionBackendSummary"),
     contextInput = document.getElementById("contextWindowCustom"),
+    contextSummary = document.getElementById("contextWindowSummary"),
     contextError = document.getElementById("contextWindowError");
   modal.classList.remove("directory-mode");
   toolbar.hidden = true;
@@ -496,6 +499,7 @@ function resetSheetMode() {
   hiddenToggle.disabled = false;
   hiddenToggle.setAttribute("aria-pressed", "false");
   hiddenToggle.classList.remove("active");
+  launchSettings.open = true;
   for (const button of document.querySelectorAll("[data-session-backend]")) {
     button.onclick = null;
     button.disabled = false;
@@ -508,6 +512,7 @@ function resetSheetMode() {
   }
   backendHelp.textContent =
     "App Server is recommended for the best web experience.";
+  backendSummary.textContent = "App Server";
   for (const button of document.querySelectorAll("[data-context-window-k]")) {
     button.onclick = null;
     button.setAttribute(
@@ -519,6 +524,7 @@ function resetSheetMode() {
   contextInput.oninput = null;
   contextInput.removeAttribute("aria-invalid");
   contextInput.closest(".context-window-custom")?.classList.remove("active");
+  contextSummary.textContent = "Default context";
   contextError.hidden = true;
   contextError.textContent = "";
 }
@@ -1126,6 +1132,7 @@ function bindWorkstationPicker(entries, state, onSelect) {
 function bindSessionBackendPicker(state, { appServerReady = true } = {}) {
   const buttons = [...document.querySelectorAll("[data-session-backend]")],
     help = document.getElementById("sessionBackendHelp"),
+    summary = document.getElementById("sessionBackendSummary"),
     appServerButton = buttons.find(
       (button) =>
         button.dataset.sessionBackend === SESSION_BACKEND.APP_SERVER.key,
@@ -1144,6 +1151,10 @@ function bindSessionBackendPicker(state, { appServerReady = true } = {}) {
       : state.key === SESSION_BACKEND.APP_SERVER.key
         ? "App Server is recommended for structured streaming and reliable web control."
         : "TUI compatibility keeps Codex inside a tmux terminal session.";
+    summary.textContent =
+      state.key === SESSION_BACKEND.APP_SERVER.key
+        ? "App Server"
+        : "TUI (tmux)";
   };
   for (const button of buttons)
     button.onclick = () => {
@@ -1171,6 +1182,7 @@ function bindContextWindowPicker(state) {
     input = document.getElementById("contextWindowCustom"),
     custom = input.closest(".context-window-custom"),
     help = document.getElementById("contextWindowHelp"),
+    summary = document.getElementById("contextWindowSummary"),
     error = document.getElementById("contextWindowError");
   const clearError = () => {
       error.hidden = true;
@@ -1191,12 +1203,16 @@ function bindContextWindowPicker(state) {
         );
       }
       custom.classList.toggle("active", state.mode === "custom");
-      if (state.mode === "default")
+      if (state.mode === "default") {
         help.textContent = "Inherit this workstation's Codex settings.";
-      else if (selected !== null)
+        summary.textContent = "Default context";
+      } else if (selected !== null) {
         help.textContent = `${selected}K requested · auto-compact at ${Math.floor((selected * 90) / 100)}K. Codex may report a slightly smaller usable window.`;
-      else
+        summary.textContent = `${selected}K context`;
+      } else {
         help.textContent = `Enter a whole number from ${CONTEXT_WINDOW_MIN_K} to ${CONTEXT_WINDOW_MAX_K} K.`;
+        summary.textContent = "Custom context";
+      }
     };
   input.value = state.mode === "custom" ? String(state.custom || "") : "";
   for (const button of buttons)
@@ -1222,6 +1238,7 @@ function bindContextWindowPicker(state) {
     error.textContent = `Enter a whole number from ${CONTEXT_WINDOW_MIN_K} to ${CONTEXT_WINDOW_MAX_K} K.`;
     error.hidden = false;
     input.setAttribute("aria-invalid", "true");
+    document.getElementById("launchSettings").open = true;
     input.focus({ preventScroll: true });
     return null;
   };
@@ -1234,7 +1251,8 @@ function directorySheet(data, recent, label, options = {}) {
       toolbar = document.getElementById("directoryToolbar"),
       breadcrumb = document.getElementById("directoryBreadcrumb"),
       search = document.getElementById("directorySearch"),
-      hiddenToggle = document.getElementById("directoryHiddenToggle");
+      hiddenToggle = document.getElementById("directoryHiddenToggle"),
+      launchSettings = document.getElementById("launchSettings");
     resetSheetMode();
     modal.classList.remove("anchored");
     modal.classList.add("directory-mode");
@@ -1243,6 +1261,7 @@ function directorySheet(data, recent, label, options = {}) {
     document.getElementById("modalBody").textContent =
       options.body || `Choose where this ${label} session should work.`;
     toolbar.hidden = false;
+    launchSettings.open = !matchMedia("(max-width: 620px)").matches;
     let readBackend = bindSessionBackendPicker(
       options.backendState || { key: SESSION_BACKEND.APP_SERVER.key },
       { appServerReady: options.appServerReady !== false },

@@ -293,6 +293,24 @@ await withBrowser({
     || !explicitFolderSheet.primary || !explicitFolderSheet.sheetFitsViewport) {
     throw new Error(`Explicit resume folder picker did not open: ${JSON.stringify(explicitFolderSheet)}`);
   }
+  const compactSettings = await evaluate(`(() => ({
+    summaryVisible: Boolean(document.querySelector('#launchSettings > summary')?.getClientRects().length),
+    open: document.getElementById('launchSettings')?.open || false,
+    backendVisible: Boolean(document.getElementById('sessionBackendPicker')?.getClientRects().length),
+    contextVisible: Boolean(document.getElementById('contextWindowPicker')?.getClientRects().length),
+    text: document.querySelector('#launchSettings > summary')?.textContent?.trim() || '',
+  }))()`);
+  if (viewportWidth <= 620) {
+    if (!compactSettings.summaryVisible || compactSettings.open || compactSettings.backendVisible
+      || compactSettings.contextVisible || !compactSettings.text.includes('TUI (tmux)')
+      || !compactSettings.text.includes('Default context')) {
+      throw new Error(`Mobile session settings did not start compact: ${JSON.stringify(compactSettings)}`);
+    }
+    await evaluate("document.querySelector('#launchSettings > summary')?.click()");
+  } else if (compactSettings.summaryVisible || !compactSettings.open
+    || !compactSettings.backendVisible || !compactSettings.contextVisible) {
+    throw new Error(`Desktop session settings were unexpectedly compact: ${JSON.stringify(compactSettings)}`);
+  }
   const backendPicker = await evaluate(`(() => ({
     visible: Boolean(document.getElementById('sessionBackendPicker')?.getClientRects().length),
     labels: [...document.querySelectorAll('[data-session-backend]')].map((item) => item.textContent.trim()),
@@ -513,6 +531,9 @@ await withBrowser({
         headerBackAbsent: !document.getElementById('modalBack'),
         searchVisible: (() => { const item=document.getElementById('directorySearch');return Boolean(item&&item.getClientRects().length); })(),
         hiddenToggleVisible: (() => { const item=document.getElementById('directoryHiddenToggle');return Boolean(item&&item.getClientRects().length&&item.getAttribute('aria-pressed')==='false'); })(),
+        settingsSummaryVisible: (() => { const item=document.querySelector('#launchSettings > summary');return Boolean(item&&item.getClientRects().length); })(),
+        settingsOpen: document.getElementById('launchSettings')?.open || false,
+        settingsSummary: document.querySelector('#launchSettings > summary')?.textContent?.trim() || '',
         contextPickerVisible: (() => { const item=document.getElementById('contextWindowPicker');return Boolean(item&&item.getClientRects().length); })(),
         backendPickerVisible: (() => { const item=document.getElementById('sessionBackendPicker');return Boolean(item&&item.getClientRects().length); })(),
         backendDefault: document.querySelector('[data-session-backend="APP_SERVER"]')?.getAttribute('aria-pressed') === 'true',
@@ -533,6 +554,7 @@ await withBrowser({
         cancelVisible: (() => { const item=[...document.querySelectorAll('#modalActions button')].find((button)=>button.textContent==='Cancel'),rect=item?.getBoundingClientRect();return Boolean(rect&&rect.top>=0&&rect.bottom<=innerHeight); })(),
         sheetContained: (() => { const rect=document.querySelector('#modal .sheet')?.getBoundingClientRect();return Boolean(rect&&rect.top>=0&&rect.bottom<=innerHeight); })(),
         listScrollable: (() => { const list=document.getElementById('modalChoices');return Boolean(list&&list.scrollHeight>list.clientHeight); })(),
+        listHeight: document.getElementById('modalChoices')?.clientHeight || 0,
         listOverflowY: (() => { const list=document.getElementById('modalChoices');return list?getComputedStyle(list).overflowY:''; })(),
         actionsBelowList: (() => { const list=document.getElementById('modalChoices')?.getBoundingClientRect(),actions=document.getElementById('modalActions')?.getBoundingClientRect();return Boolean(list&&actions&&list.bottom<=actions.top+1); })(),
         noHorizontalOverflow: document.documentElement.scrollWidth<=document.documentElement.clientWidth+1,
@@ -543,8 +565,8 @@ await withBrowser({
       || !cwdConfirmation.directoryMode || !cwdConfirmation.breadcrumbs || cwdConfirmation.breadcrumbs > 4
       || !cwdConfirmation.breadcrumbLabelsClean || !cwdConfirmation.currentCrumb
       || !cwdConfirmation.headerBackAbsent || !cwdConfirmation.searchVisible || !cwdConfirmation.hiddenToggleVisible
-      || !cwdConfirmation.contextPickerVisible || !cwdConfirmation.contextDefault || !cwdConfirmation.contextOneMillion
-      || !cwdConfirmation.backendPickerVisible || !cwdConfirmation.backendDefault || !cwdConfirmation.backendWireHidden
+      || !cwdConfirmation.contextDefault || !cwdConfirmation.contextOneMillion
+      || !cwdConfirmation.backendDefault || !cwdConfirmation.backendWireHidden
       || !cwdConfirmation.legacyRouteSheetAbsent
       || !cwdConfirmation.backendLabels.some((value) => value.includes('Codex App Server'))
       || !cwdConfirmation.backendLabels.some((value) => value.includes('Codex TUI (tmux)'))
@@ -555,6 +577,31 @@ await withBrowser({
       || !cwdConfirmation.noHorizontalOverflow
       || !['auto', 'scroll'].includes(cwdConfirmation.listOverflowY)) {
       throw new Error(`Working-directory confirmation did not open: ${JSON.stringify(cwdConfirmation)}`);
+    }
+    if (viewportWidth <= 620) {
+      if (!cwdConfirmation.settingsSummaryVisible || cwdConfirmation.settingsOpen
+        || cwdConfirmation.contextPickerVisible || cwdConfirmation.backendPickerVisible
+        || !cwdConfirmation.settingsSummary.includes('App Server')
+        || !cwdConfirmation.settingsSummary.includes('Default context')
+        || cwdConfirmation.listHeight < 180) {
+        throw new Error(`Mobile directory space was not prioritized: ${JSON.stringify(cwdConfirmation)}`);
+      }
+      await evaluate("document.querySelector('#launchSettings > summary')?.click()");
+      const expandedSettings = await evaluate(`(() => ({
+        open: document.getElementById('launchSettings')?.open || false,
+        backendVisible: Boolean(document.getElementById('sessionBackendPicker')?.getClientRects().length),
+        contextVisible: Boolean(document.getElementById('contextWindowPicker')?.getClientRects().length),
+      }))()`);
+      if (!expandedSettings.open || !expandedSettings.backendVisible || !expandedSettings.contextVisible)
+        throw new Error(`Mobile session settings did not expand: ${JSON.stringify(expandedSettings)}`);
+      await evaluate("document.querySelector('[data-context-window-k=\"372\"]')?.click()");
+      const updatedSummary = await evaluate("document.getElementById('contextWindowSummary')?.textContent || ''");
+      if (updatedSummary !== '372K context')
+        throw new Error(`Mobile session settings summary did not update: ${updatedSummary}`);
+      await evaluate("document.querySelector('[data-context-window-k=\"0\"]')?.click();document.querySelector('#launchSettings > summary')?.click()");
+    } else if (cwdConfirmation.settingsSummaryVisible || !cwdConfirmation.settingsOpen
+      || !cwdConfirmation.contextPickerVisible || !cwdConfirmation.backendPickerVisible) {
+      throw new Error(`Desktop directory settings were unexpectedly collapsed: ${JSON.stringify(cwdConfirmation)}`);
     }
     await evaluate("document.getElementById('directoryHiddenToggle')?.click()");
     let hiddenState = {};
