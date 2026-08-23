@@ -1,8 +1,9 @@
 # Faryo Owner Architecture
 
-Faryo Owner is the local execution layer. It owns only the local `tmux` control
-surface. It does not own the public entry point, account login, path routing, or
-Caddy.
+Faryo Owner is the local Codex execution layer. It owns the private Codex App
+Server connection and the compatibility control surface for existing Codex TUI
+sessions in `tmux`. It does not own the public entry point, account login, path
+routing, or Cloudflare Access.
 
 `Owner` is an internal component name. It is not the Faryo product name or a
 public brand surface.
@@ -14,8 +15,8 @@ Faryo Gateway
   -> route port or SSH reverse tunnel
   -> local execution endpoint 127.0.0.1:8765
   -> faryo-owner.service
-  -> tmux target session
-  -> terminal TUI
+     -> private Codex App Server socket -> Codex thread (default)
+     -> tmux target session -> Codex TUI (compatibility)
 ```
 
 The phone should not access Owner directly. Owner tokens should be injected by
@@ -45,7 +46,8 @@ maintained runtime after successful installation.
 
 ## 3. Required Dependencies
 
-- `tmux`: terminal TUI and session foundation.
+- `tmux`: compatibility backend for terminal TUI sessions and existing desktop
+  workflows. Codex App Server sessions do not create a tmux pane.
 - `curl`: health, smoke, and status checks.
 - `openssh-client`: required only when this endpoint establishes a reverse
   tunnel to the Gateway host.

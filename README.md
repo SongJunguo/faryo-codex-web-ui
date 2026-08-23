@@ -131,7 +131,9 @@ Current source line: **Faryo 1.11.1**. Latest tagged source release: **[Faryo
   card whose title reports semantic counts. Completed groups default closed;
   running, waiting and failed groups expose their state immediately. Command
   output, tool results and file diffs are fetched through an authenticated,
-  no-store item endpoint only when a user expands that item.
+  no-store item endpoint only when a user expands that item. A closed group
+  mounts only its summary row, so tool-heavy turns do not create a hidden DOM
+  subtree during initial history rendering.
 - Treats Codex rollout JSONL as the durable final source. An Owner restart can
   reconnect to the independent App Server service and recover both conversation
   messages and bounded tool activity without inventing a second message database.

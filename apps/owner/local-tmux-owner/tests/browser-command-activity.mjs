@@ -221,7 +221,7 @@ await withBrowser(
     });
     if (detailRequests || initial.open[0] || !initial.open[1] || initial.commandRows !== 1
       || !initial.commandText.includes("Renamed conversation") || !initial.failedVisible
-      || !initial.completedSummary.includes("1,000 commands") || initial.collapsedItems
+      || !initial.completedSummary.includes("1000 commands") || initial.collapsedItems
       || initial.detailBodies || initial.overflow) {
       throw new Error(`Initial activity hierarchy failed: ${JSON.stringify({ initial, detailRequests })}`);
     }

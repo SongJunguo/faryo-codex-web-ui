@@ -5,18 +5,20 @@
 
 ## Active
 
+当前没有实施中的版本计划。维护项从下方最近完成的计划继续跟踪；新工作应先建立独立计划。
+
+## Completed or maintenance mode
+
 - [`v1.11-command-and-tool-timeline-plan.md`](v1.11-command-and-tool-timeline-plan.md)：
   把 `/rename`、`/model`、`/fast`、`/permissions` 和 Goal 等本地会话命令建模为不进入
   模型上下文、可在刷新后恢复的 command lifecycle；同时把 command execution、文件修改、
-  search、MCP 和未知工具从有损文本升级为 typed activity、默认折叠分组和按需安全详情。
+  search、MCP 和未知工具从有损文本升级为 typed activity、真正惰性的折叠分组和按需安全
+  详情。
 
 - [`v1.10-release-and-maintainability-plan.md`](v1.10-release-and-maintainability-plan.md)：
-  在已补齐 1.9.1 公开发布断层后，继续收敛 Owner/前端 composition root；让 New/Resume
-  显式选择 Codex App Server 或 Codex TUI (tmux)，建立版本感知命令能力、状态代际隔离、
-  浏览器 envelope、依赖更新、固定 Actions、CodeQL 和 Ubuntu 22.04 最低兼容门；保持
-  App Server 流、Markdown/TeX、移动端、认证、可靠发送和 tmux 几何不回归。
-
-## Completed or maintenance mode
+  收敛 Owner/前端 composition root；让 New/Resume 显式选择 Codex App Server 或 Codex TUI
+  (tmux)，建立版本感知命令能力、状态代际隔离、浏览器 envelope、依赖更新、固定 Actions、
+  CodeQL 和 Ubuntu 22.04 最低兼容门。
 
 - [`v1.9-appserver-streaming-plan.md`](v1.9-appserver-streaming-plan.md)：以官方 Codex App
   Server 建立正文 delta、双向 RPC、单写者会话状态机、有界 SSE replay/gap 和 JSONL
