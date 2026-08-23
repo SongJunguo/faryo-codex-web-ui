@@ -177,6 +177,8 @@ class FakeRuntimeClient:
             return {}
         if method == "thread/unsubscribe":
             return {"status": "unsubscribed"}
+        if method in {"thread/archive", "thread/unarchive"}:
+            return {"threadId": params["threadId"]}
         raise AssertionError(f"unexpected method: {method}")
 
 
@@ -247,6 +249,7 @@ class RuntimeTest(unittest.TestCase):
                 title="Demo resumed",
             )
             status = runtime.status()
+            lifecycle = runtime.thread_lifecycle("thread/archive", started["threadId"])
             runtime.stop()
 
         self.assertTrue(sent["accepted"])
@@ -271,6 +274,8 @@ class RuntimeTest(unittest.TestCase):
         self.assertNotIn("Answer", repr([event.payload for event in replay.events]))
         self.assertEqual(status["pendingRpcCount"], 0)
         self.assertEqual(len(clients), 1)
+        self.assertTrue(lifecycle["ok"])
+        self.assertEqual(lifecycle["result"]["threadId"], started["threadId"])
 
     def test_runtime_reassigns_persisted_names_that_now_belong_to_tmux(self) -> None:
         clients = []

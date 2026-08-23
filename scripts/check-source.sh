@@ -199,6 +199,7 @@ release_checks() {
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-structured-interactions.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-goal-details.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-command-activity.mjs"
+  "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-real-command-timeline.mjs"
   "$NODE_BIN" --check "$ROOT/apps/gateway/server/tests/browser-workbench-smoke.mjs"
   "$NODE_BIN" --check "$ROOT/apps/gateway/server/tests/browser-resume-preflight.mjs"
   "$NODE_BIN" "$ROOT/apps/owner/local-tmux-owner/tests/markdown-ast-bundle.test.js"

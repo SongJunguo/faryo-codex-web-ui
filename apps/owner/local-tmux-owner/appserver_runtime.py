@@ -252,6 +252,9 @@ class AppServerRuntime:
     def activity_detail(self, name: str, item_id: str, timeout: float = 5.0) -> dict[str, Any]:
         return self._submit(self._activity_detail(name, item_id), timeout)
 
+    def thread_lifecycle(self, method: str, thread_id: str, timeout: float = 5.0) -> dict[str, Any]:
+        return self._submit(self._thread_lifecycle(method, thread_id), timeout)
+
     def replay(self, cursor: str | None) -> ReplayResult:
         with self.condition:
             return self.journal.replay(cursor)
@@ -732,6 +735,15 @@ class AppServerRuntime:
         if detail is None:
             raise AppServerRuntimeError("activity detail is unavailable")
         return {"item": public_id, "detail": detail}
+
+    async def _thread_lifecycle(self, method: str, thread_id: str) -> dict[str, Any]:
+        if method not in {"thread/archive", "thread/unarchive"}:
+            raise AppServerRuntimeError("unsupported Codex thread lifecycle action")
+        clean_thread_id = str(thread_id or "").strip()
+        if not clean_thread_id or len(clean_thread_id) > 160 or "\x00" in clean_thread_id:
+            raise AppServerRuntimeError("invalid Codex thread id")
+        result = await self._require_client().rpc(method, {"threadId": clean_thread_id})
+        return {"ok": True, "result": result if isinstance(result, Mapping) else {}}
 
     async def _close_session(self, name: str) -> dict[str, Any]:
         record, actor = self._require_session(name)

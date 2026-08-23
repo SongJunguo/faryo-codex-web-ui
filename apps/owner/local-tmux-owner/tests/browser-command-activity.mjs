@@ -12,8 +12,7 @@ if (!targetUrl) throw new Error("FARYO_SMOKE_URL is required");
 
 const turnA = "appserver-turn-anonymous-a";
 const turnB = "appserver-turn-anonymous-b";
-const messageBlocks = [
-  { id: "user-a", turnKey: turnA, questionKey: turnA, kind: "user", role: "user", text: "Run an anonymous check", final: true },
+const completedActivities = [
   {
     id: "appserver-item-0123456789abcdef",
     turnKey: turnA,
@@ -32,7 +31,30 @@ const messageBlocks = [
       durationMs: 12,
     },
   },
+  ...Array.from({ length: 999 }, (_, index) => ({
+    id: `appserver-item-${String(index + 1).padStart(16, "0")}`,
+    turnKey: turnA,
+    kind: "process",
+    role: "process",
+    text: `Ran anonymous task ${index + 2} · exit 0`,
+    final: true,
+    activity: {
+      type: "command",
+      status: "completed",
+      title: `anonymous task ${index + 2}`,
+      summary: "Command finished",
+      detailKind: "command_output",
+      detailAvailable: false,
+      exitCode: 0,
+    },
+  })),
+];
+const turnABlocks = [
+  { id: "user-a", turnKey: turnA, questionKey: turnA, kind: "user", role: "user", text: "Run an anonymous check", final: true },
+  ...completedActivities,
   { id: "answer-a", turnKey: turnA, kind: "output", role: "assistant", text: "The check passed with \(x^2\).", final: true },
+];
+const turnBBlocks = [
   { id: "user-b", turnKey: turnB, questionKey: turnB, kind: "user", role: "user", text: "Try a file update", final: true },
   {
     id: "appserver-item-fedcba9876543210",
@@ -53,6 +75,7 @@ const messageBlocks = [
   },
   { id: "answer-b", turnKey: turnB, kind: "output", role: "assistant", text: "The update was not applied.", final: true },
 ];
+const messageBlocks = [...turnABlocks, ...turnBBlocks];
 const commandEvents = [{
   id: "cmd_abcdefghijklmnop",
   kind: "command",
@@ -139,8 +162,8 @@ await withBrowser(
           { index: 1, key: turnB, preview: "Try a file update" },
         ],
         turns: [
-          { index: 0, key: turnA, preview: "Run an anonymous check", text: capture.text.split("\n\n› Try")[0], blocks: messageBlocks.slice(0, 3) },
-          { index: 1, key: turnB, preview: "Try a file update", text: "› Try a file update\n\n• The update was not applied.", blocks: messageBlocks.slice(3) },
+          { index: 0, key: turnA, preview: "Run an anonymous check", text: capture.text.split("\n\n› Try")[0], blocks: turnABlocks },
+          { index: 1, key: turnB, preview: "Try a file update", text: "› Try a file update\n\n• The update was not applied.", blocks: turnBBlocks },
         ],
         updatedAt: capture.updatedAt,
       }),
@@ -190,12 +213,15 @@ await withBrowser(
         commandRows: document.querySelectorAll("#output > .command-timeline-row").length,
         commandText: document.querySelector("#output > .command-timeline-row")?.textContent || "",
         failedVisible: cards[1]?.textContent.includes("failed") || false,
+        completedSummary: cards[0]?.querySelector(":scope > summary")?.textContent || "",
+        collapsedItems: cards[0]?.querySelectorAll(".compact-activity-item").length || 0,
         detailBodies: document.querySelectorAll(".activity-detail-body[data-state=ready]").length,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
       };
     });
     if (detailRequests || initial.open[0] || !initial.open[1] || initial.commandRows !== 1
       || !initial.commandText.includes("Renamed conversation") || !initial.failedVisible
+      || !initial.completedSummary.includes("1,000 commands") || initial.collapsedItems
       || initial.detailBodies || initial.overflow) {
       throw new Error(`Initial activity hierarchy failed: ${JSON.stringify({ initial, detailRequests })}`);
     }

@@ -1966,22 +1966,7 @@
     }
   }
 
-  function renderActivityCard(node, model) {
-    if (node.dataset.faryoActivitySignature === model.signature) return;
-    const wasOpen = Boolean(node.open);
-    const hadSignature = Boolean(node.dataset.faryoActivitySignature);
-    const hadAttention = node.dataset.faryoActivityAttention === 'true';
-    const openItems = new Set(
-      [...node.querySelectorAll(':scope > .compact-activity-list > details[open][data-activity-item-id]')]
-        .map((item) => item.dataset.activityItemId),
-    );
-    const summary = document.createElement('summary');
-    summary.className = 'compact-activity-title';
-    const label = document.createElement('span');
-    label.textContent = String(model.summary || 'Activity');
-    label.title = label.textContent;
-    summary.appendChild(label);
-
+  function buildActivityList(model, openItems = new Set()) {
     const list = document.createElement('div');
     list.className = 'compact-activity-list';
     for (const [index, item] of (model.items || []).entries()) {
@@ -2018,8 +2003,44 @@
         list.appendChild(line);
       }
     }
-    node.replaceChildren(summary, list);
+    return list;
+  }
+
+  function materializeActivityList(node) {
+    if (!node.open || node.querySelector(':scope > .compact-activity-list')) return;
+    const model = node.__faryoActivityModel;
+    if (!model) return;
+    node.appendChild(buildActivityList(model, node.__faryoActivityOpenItems || new Set()));
+  }
+
+  function renderActivityCard(node, model) {
+    if (!node.__faryoActivityToggleBound) {
+      node.addEventListener('toggle', () => materializeActivityList(node));
+      node.__faryoActivityToggleBound = true;
+    }
+    if (node.dataset.faryoActivitySignature === model.signature) {
+      materializeActivityList(node);
+      return;
+    }
+    const wasOpen = Boolean(node.open);
+    const hadSignature = Boolean(node.dataset.faryoActivitySignature);
+    const hadAttention = node.dataset.faryoActivityAttention === 'true';
+    const openItems = new Set(
+      [...node.querySelectorAll(':scope > .compact-activity-list > details[open][data-activity-item-id]')]
+        .map((item) => item.dataset.activityItemId),
+    );
+    const summary = document.createElement('summary');
+    summary.className = 'compact-activity-title';
+    const label = document.createElement('span');
+    label.textContent = String(model.summary || 'Activity');
+    label.title = label.textContent;
+    summary.appendChild(label);
+
+    node.__faryoActivityModel = model;
+    node.__faryoActivityOpenItems = openItems;
+    node.replaceChildren(summary);
     node.open = wasOpen || (Boolean(model.openByDefault) && (!hadSignature || !hadAttention));
+    materializeActivityList(node);
     node.dataset.faryoActivityAttention = model.openByDefault ? 'true' : 'false';
     node.dataset.faryoActivitySignature = model.signature;
   }

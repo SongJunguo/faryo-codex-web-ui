@@ -104,6 +104,13 @@ await withBrowser(
         card.open = true;
       }
     });
+    await page.waitForFunction(
+      ({ commands, edits, searches }) => document.querySelectorAll(
+        "#output .compact-activity-item",
+      ).length >= commands + edits + searches,
+      minimum,
+      { timeout: 5_000 },
+    );
     const opened = await page.evaluate(collect);
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(
@@ -141,8 +148,8 @@ await withBrowser(
         minimum.commands + minimum.edits + minimum.searches ||
       opened.longItems < 1 ||
       reloaded.openCards ||
-      reloaded.activityItems <
-        minimum.commands + minimum.edits + minimum.searches ||
+      closed.activityItems ||
+      reloaded.activityItems ||
       closed.commands < minimum.commands ||
       closed.edits < minimum.edits ||
       closed.searches < minimum.searches ||

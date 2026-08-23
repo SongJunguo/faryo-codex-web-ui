@@ -600,7 +600,13 @@ codex_thread_by_id = _session_catalog.codex_thread_by_id
 codex_thread_lifecycle_error_status = _session_catalog.codex_thread_lifecycle_error_status
 
 
-def change_codex_thread_archive_state(config: Config, thread_id: str, archived: bool, history_root: str | None = None) -> dict[str, Any]:
+def change_codex_thread_archive_state(
+    config: Config,
+    thread_id: str,
+    archived: bool,
+    history_root: str | None = None,
+    lifecycle_rpc: Callable[[str, str, float], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     clean_id = clean_agent_session_id(thread_id)
     if not clean_id:
         raise OwnerError("invalid agent session id")
@@ -613,7 +619,11 @@ def change_codex_thread_archive_state(config: Config, thread_id: str, archived: 
     if clean_id in active or clean_id in superseded:
         raise OwnerError("active agent sessions cannot be archived", HTTPStatus.CONFLICT)
     method = "thread/archive" if archived else "thread/unarchive"
-    response = codex_app_server_rpc(method, {"threadId": clean_id}, timeout=5.0)
+    response = (
+        lifecycle_rpc(method, clean_id, 5.0)
+        if lifecycle_rpc is not None
+        else codex_app_server_rpc(method, {"threadId": clean_id}, timeout=5.0)
+    )
     if not response.get("ok"):
         raise OwnerError(
             "Codex thread lifecycle request failed",

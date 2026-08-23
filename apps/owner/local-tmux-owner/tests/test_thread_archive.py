@@ -51,6 +51,25 @@ class ThreadArchiveTest(unittest.TestCase):
         self.assertFalse(result["archived"])
         self.assertFalse(result["duplicate"])
 
+    def test_archive_can_use_the_owner_persistent_runtime_rpc(self) -> None:
+        lifecycle = mock.Mock(return_value={"ok": True, "result": {}})
+        with (
+            mock.patch.object(server, "codex_thread_record", side_effect=[self.base, {**self.base, "archived": 1}]),
+            mock.patch.object(server, "active_codex_thread_state", return_value=({}, set())),
+            mock.patch.object(server, "codex_app_server_rpc") as legacy_rpc,
+        ):
+            result = server.change_codex_thread_archive_state(
+                self.config,
+                "thread-a",
+                True,
+                "/workspace",
+                lifecycle,
+            )
+
+        lifecycle.assert_called_once_with("thread/archive", "thread-a", 5.0)
+        legacy_rpc.assert_not_called()
+        self.assertTrue(result["archived"])
+
     def test_target_state_is_idempotent_without_rpc(self) -> None:
         with (
             mock.patch.object(server, "codex_thread_record", return_value={**self.base, "archived": 1}),

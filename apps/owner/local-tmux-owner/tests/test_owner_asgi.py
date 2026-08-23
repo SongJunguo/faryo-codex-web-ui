@@ -112,6 +112,9 @@ class FakeRuntime:
             },
         }
 
+    def thread_lifecycle(self, method, thread_id, _timeout):
+        return {"ok": True, "result": {"method": method, "threadId": thread_id}}
+
     def resume_session(self, **values):
         self.resumed.append(values)
         self.sessions.add("faryo2")
