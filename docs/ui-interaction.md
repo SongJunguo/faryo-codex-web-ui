@@ -111,9 +111,12 @@ Each user message is a separate question-navigation target even if Codex keeps
 several messages inside one protocol turn. Commands, searches and edits form a
 new Activity card for each contiguous batch, so interim assistant output and
 later work retain their actual timeline order. A card title reports command,
-edit and search counts; completed cards default closed while active or failed
-work exposes its state. Long command rows remain closed one level deeper until
-explicitly selected. After an Owner reconnect, missing `thread/read` activity
+edit and search counts. Every card defaults closed, including active, waiting
+and failed work; those states remain visible in the summary until the user
+chooses to open the card. Long command rows remain closed one level deeper until
+explicitly selected. An expanded Activity list uses native scroll chaining: at
+its top or bottom, continued wheel or touch movement scrolls the surrounding
+conversation history. After an Owner reconnect, missing `thread/read` activity
 is reconstructed from the durable rollout and aligned in Owner memory without
 returning message-derived identities to the browser. Tool output and private
 reasoning bodies are not projected.

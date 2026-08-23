@@ -134,8 +134,6 @@ export function groupActivityBlocks(value) {
     activeGroup.items.push(normalized);
     activeGroup.final = activeGroup.final && normalized.final;
     activeGroup.revision = Math.max(activeGroup.revision, Number(item?.revision || 0));
-    const status = activityStatus(normalized);
-    if (["failed", "declined", "waiting", "running"].includes(status)) activeGroup.openByDefault = true;
   }
 
   for (const group of groups) {

@@ -2023,8 +2023,6 @@
       return;
     }
     const wasOpen = Boolean(node.open);
-    const hadSignature = Boolean(node.dataset.faryoActivitySignature);
-    const hadAttention = node.dataset.faryoActivityAttention === 'true';
     const openItems = new Set(
       [...node.querySelectorAll(':scope > .compact-activity-list > details[open][data-activity-item-id]')]
         .map((item) => item.dataset.activityItemId),
@@ -2039,9 +2037,11 @@
     node.__faryoActivityModel = model;
     node.__faryoActivityOpenItems = openItems;
     node.replaceChildren(summary);
-    node.open = wasOpen || (Boolean(model.openByDefault) && (!hadSignature || !hadAttention));
+    // Activity is always opt-in: running, waiting and failed batches retain
+    // their status in the summary but never open without a user gesture.
+    node.open = wasOpen;
     materializeActivityList(node);
-    node.dataset.faryoActivityAttention = model.openByDefault ? 'true' : 'false';
+    delete node.dataset.faryoActivityAttention;
     node.dataset.faryoActivitySignature = model.signature;
   }
 

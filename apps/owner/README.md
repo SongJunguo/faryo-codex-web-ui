@@ -68,9 +68,12 @@ JSONL. Empty private-reasoning placeholders are not projected as messages.
 Commands, searches and file changes remain inspectable. Each user message owns
 its following output even when Codex retains one long protocol turn, and
 contiguous activity batches stay at their chronological position instead of
-being hoisted into one old card. Completed batches default collapsed; an active
-batch exposes its current work. The replay journal is count- and byte-bounded
-and stores control metadata, not a second persistent copy of conversation bodies.
+being hoisted into one old card. Every batch defaults collapsed, including
+active and failed work; only an explicit user click mounts its details. The
+replay journal is count- and byte-bounded and stores control metadata, not a
+second persistent copy of conversation bodies.
+At either end of an expanded Activity list, continued wheel or touch scrolling
+chains naturally into the surrounding conversation history.
 
 The old `ThreadingHTTPServer` production entry has been removed. The remaining
 synchronous `codex_app_server.py` helper is intentionally restricted to

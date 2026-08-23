@@ -143,10 +143,19 @@ test("typed activity drives labels, attention and details without text regexes",
   ]);
   const activity = grouped[1];
   assert.equal(activity.summary, "Activity · 1 MCP call · 1 needs attention");
-  assert.equal(activity.openByDefault, true);
+  assert.equal(activity.openByDefault, false);
   assert.equal(activityItemCollapsible(activity.items[0]), true);
   assert.equal(activityItemSummary(activity.items[0]), "reference.lookup · failed");
   assert.equal(activityStatus(activity.items[0]), "failed");
+});
+
+test("running waiting failed and declined activity always defaults closed", () => {
+  for (const status of ["running", "waiting", "failed", "declined"]) {
+    const grouped = groupActivityBlocks([
+      { id: `tool-${status}`, turnKey: "turn-a", kind: "process", text: status, final: status !== "running", activity: { type: "tool", status, title: status } },
+    ]);
+    assert.equal(grouped[0].openByDefault, false, status);
+  }
 });
 
 test("command lifecycle rows keep stable ids and anchor after their turn", () => {

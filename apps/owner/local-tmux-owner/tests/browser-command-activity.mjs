@@ -221,15 +221,15 @@ await withBrowser(
         open: cards.map((card) => card.open),
         commandRows: document.querySelectorAll("#output > .command-timeline-row").length,
         commandText: document.querySelector("#output > .command-timeline-row")?.textContent || "",
-        failedVisible: cards[1]?.textContent.includes("failed") || false,
+        attentionVisible: cards[1]?.querySelector(":scope > summary")?.textContent.includes("needs attention") || false,
         completedSummary: cards[0]?.querySelector(":scope > summary")?.textContent || "",
         collapsedItems: cards[0]?.querySelectorAll(".compact-activity-item").length || 0,
         detailBodies: document.querySelectorAll(".activity-detail-body[data-state=ready]").length,
         overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
       };
     });
-    if (detailRequests || initial.open[0] || !initial.open[1] || initial.commandRows !== 1
-      || !initial.commandText.includes("Renamed conversation") || !initial.failedVisible
+    if (detailRequests || initial.open.some(Boolean) || initial.commandRows !== 1
+      || !initial.commandText.includes("Renamed conversation") || !initial.attentionVisible
       || !initial.completedSummary.includes("1000 commands") || initial.collapsedItems
       || initial.detailBodies || initial.overflow) {
       throw new Error(`Initial activity hierarchy failed: ${JSON.stringify({ initial, detailRequests })}`);
@@ -241,6 +241,28 @@ await withBrowser(
     await page.waitForFunction(() => document.querySelector(".activity-detail-output pre")?.textContent.includes("anonymous command output"));
     if (detailRequests !== 1) throw new Error(`Detail was not loaded exactly once: ${detailRequests}`);
 
+    const activityList = firstCard.locator(":scope > .compact-activity-list");
+    await activityList.evaluate((list) => {
+      const scroller = document.getElementById("outputWrap");
+      if (scroller) scroller.scrollTop = 0;
+      list.scrollTop = list.scrollHeight;
+    });
+    await activityList.hover();
+    await page.mouse.wheel(0, 420);
+    await page.waitForTimeout(120);
+    const chained = await page.evaluate(() => {
+      const scroller = document.getElementById("outputWrap");
+      const list = document.querySelector(".compact-activity-list");
+      return {
+        outerTop: scroller?.scrollTop || 0,
+        listAtEnd: list ? Math.abs(list.scrollHeight - list.clientHeight - list.scrollTop) <= 2 : false,
+        overscrollY: list ? getComputedStyle(list).overscrollBehaviorY : "",
+      };
+    });
+    if (!chained.listAtEnd || chained.overscrollY !== "auto" || chained.outerTop <= 0) {
+      throw new Error(`Activity scroll did not chain to conversation history: ${JSON.stringify(chained)}`);
+    }
+
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => (
       document.documentElement.dataset.faryoAppReady === "1"
@@ -249,6 +271,7 @@ await withBrowser(
     ), null, { timeout: 25_000 });
     const reloaded = await page.evaluate(() => ({
       cards: document.querySelectorAll("#output > .compact-activity-card").length,
+      openCards: document.querySelectorAll("#output > .compact-activity-card[open]").length,
       commands: document.querySelectorAll("#output > .command-timeline-row").length,
       readyDetails: document.querySelectorAll(".activity-detail-body[data-state=ready]").length,
       activityRevision: new URL(
@@ -257,7 +280,7 @@ await withBrowser(
       ).searchParams.get("v") || "",
       appRevision: new URL(document.querySelector('script[src*="app.js?"]').src).searchParams.get("v") || "",
     }));
-    if (reloaded.cards !== 2 || reloaded.commands !== 1 || reloaded.readyDetails || detailRequests !== 1
+    if (reloaded.cards !== 2 || reloaded.openCards || reloaded.commands !== 1 || reloaded.readyDetails || detailRequests !== 1
       || !reloaded.activityRevision || reloaded.activityRevision !== reloaded.appRevision || pageErrors.length) {
       throw new Error(`Ordinary reload activity contract failed: ${JSON.stringify({ reloaded, detailRequests, pageErrors })}`);
     }

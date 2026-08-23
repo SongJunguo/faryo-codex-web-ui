@@ -115,7 +115,7 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line: **Faryo 1.11.4**. Latest tagged source release: **[Faryo
+Current source line: **Faryo 1.11.5**. Latest tagged source release: **[Faryo
 1.10.3](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.3)**.
 
 ## Current Functionality
@@ -130,12 +130,14 @@ Current source line: **Faryo 1.11.4**. Latest tagged source release: **[Faryo
   navigable conversation segment, even when Codex keeps several messages in one
   protocol turn. Tool activity keeps a typed command/file/search/MCP lifecycle
   and is grouped into chronological contiguous batches whose titles report
-  semantic counts. Completed groups default closed;
-  running, waiting and failed groups expose their state immediately. Command
+  semantic counts. Every Activity batch defaults closed, including running,
+  waiting and failed work; its summary still exposes the current state. Command
   output, tool results and file diffs are fetched through an authenticated,
   no-store item endpoint only when a user expands that item. A closed group
   mounts only its summary row, so tool-heavy turns do not create a hidden DOM
-  subtree during initial history rendering.
+  subtree during initial history rendering. Expanded Activity lists use native
+  scroll chaining, so continued wheel or touch movement at a boundary resumes
+  scrolling the surrounding conversation.
 - Treats Codex rollout JSONL as the durable final source. An Owner restart can
   reconnect to the independent App Server service and recover both conversation
   messages and bounded tool activity without inventing a second message database.

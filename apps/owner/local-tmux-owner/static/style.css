@@ -107,7 +107,7 @@ main { grid-row: 2 / 4; grid-column: 1; position: relative; z-index: 1; min-widt
 .compact-activity-title::after { content: "›"; margin-left: auto; font-size: 17px; line-height: 1; transform: rotate(0); transition: transform .16s ease; }
 .compact-activity-card[open] > .compact-activity-title { border-bottom: 1px solid var(--line); }
 .compact-activity-card[open] > .compact-activity-title::after { transform: rotate(90deg); }
-.compact-activity-list { max-height: min(60vh, 560px); overflow: auto; padding: 6px 9px 9px; overscroll-behavior: contain; }
+.compact-activity-list { max-height: min(60vh, 560px); overflow: auto; padding: 6px 9px 9px; overscroll-behavior-y: auto; -webkit-overflow-scrolling: touch; }
 .compact-activity-item { padding: 6px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 64%, transparent); font: 500 calc(12px + var(--font-step))/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; overflow-wrap: anywhere; }
 .compact-activity-item:last-child { border-bottom: 0; }
 .compact-activity-item-long > summary { padding: 1px 0; cursor: pointer; color: var(--muted); font-weight: 650; list-style-position: inside; }
