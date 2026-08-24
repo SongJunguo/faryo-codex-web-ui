@@ -12,6 +12,24 @@ import {
 const delay = (milliseconds) =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function scopedBlock(id, kind, scope = "a", extra = {}) {
+  return {
+    id,
+    turnKey: `turn-${scope}`,
+    segmentKey: `question-${scope}`,
+    kind,
+    text: id,
+    ...extra,
+  };
+}
+
+function activityBlock(id, scope = "a", type = "command", status = "completed") {
+  return scopedBlock(id, "process", scope, {
+    final: status !== "running",
+    activity: { type, status, title: id },
+  });
+}
+
 function fixture(overrides = {}) {
   const output = { querySelectorAll: () => [] };
   const view = {
@@ -271,6 +289,107 @@ test("structured block merging retains history order and replaces matching live 
     ["q", "a", "p"],
   );
   assert.equal(merged[1].text, "Partial");
+});
+
+test("durable history activity is not re-appended from completed live wrappers", () => {
+  const merged = mergeMessageBlocks(
+    [
+      scopedBlock("q", "user"),
+      activityBlock("durable-command"),
+      scopedBlock("a", "output"),
+    ],
+    [
+      scopedBlock("q", "user"),
+      activityBlock("wrapper-command"),
+      scopedBlock("a", "output"),
+    ],
+  );
+
+  assert.deepEqual(merged.map((block) => block.id), ["q", "durable-command", "a"]);
+});
+
+test("new and unfinished live activity remains anchored inside its message segment", () => {
+  const history = [
+    scopedBlock("q", "user"),
+    activityBlock("durable-command"),
+    scopedBlock("a", "output"),
+  ];
+  const live = [
+    scopedBlock("q", "user"),
+    activityBlock("running-command", "a", "command", "running"),
+    activityBlock("new-search", "a", "search"),
+    scopedBlock("a", "output"),
+  ];
+
+  const merged = mergeMessageBlocks(history, live);
+  assert.deepEqual(
+    merged.map((block) => block.id),
+    ["q", "durable-command", "running-command", "new-search", "a"],
+  );
+});
+
+test("completed activity after the latest shared history block remains live", () => {
+  const merged = mergeMessageBlocks(
+    [
+      scopedBlock("q", "user"),
+      activityBlock("old-command"),
+    ],
+    [
+      scopedBlock("q", "user"),
+      activityBlock("old-command"),
+      activityBlock("new-command"),
+      scopedBlock("partial-answer", "output", "a", { final: false }),
+    ],
+    { streaming: true },
+  );
+
+  assert.deepEqual(
+    merged.map((block) => block.id),
+    ["q", "old-command", "new-command", "partial-answer"],
+  );
+});
+
+test("settled history suppresses recovered wrappers even when App Server lists them last", () => {
+  const merged = mergeMessageBlocks(
+    [
+      scopedBlock("q", "user"),
+      activityBlock("durable-command"),
+      scopedBlock("a", "output"),
+    ],
+    [
+      scopedBlock("q", "user"),
+      scopedBlock("a", "output"),
+      activityBlock("late-wrapper-command"),
+    ],
+    { streaming: false },
+  );
+
+  assert.deepEqual(merged.map((block) => block.id), ["q", "durable-command", "a"]);
+});
+
+test("streaming preserves only new activity from the active message segment", () => {
+  const merged = mergeMessageBlocks(
+    [
+      scopedBlock("old-q", "user", "old"),
+      activityBlock("old-durable", "old"),
+      scopedBlock("old-a", "output", "old"),
+      scopedBlock("new-q", "user", "new"),
+      activityBlock("new-durable", "new"),
+    ],
+    [
+      scopedBlock("old-q", "user", "old"),
+      scopedBlock("old-a", "output", "old"),
+      activityBlock("old-wrapper", "old"),
+      scopedBlock("new-q", "user", "new"),
+      activityBlock("new-durable", "new"),
+      activityBlock("new-live", "new"),
+    ],
+    { streaming: true },
+  );
+
+  assert.equal(merged.some((block) => block.id === "old-wrapper"), false);
+  assert.equal(merged.some((block) => block.id === "new-live"), true);
+  assert.equal(merged.at(-1).id, "new-live");
 });
 
 test("structured capture detection stays source-specific", () => {

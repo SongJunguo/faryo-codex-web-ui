@@ -64,18 +64,87 @@ export function normalizeMessageBlocks(value) {
   });
 }
 
-export function mergeMessageBlocks(historyBlocks, liveBlocks) {
+function blockScopeKey(block) {
+  return String(block?.segmentKey || block?.turnKey || "");
+}
+
+function completedActivityType(block) {
+  if (block?.kind !== "process" || block?.activity?.status !== "completed") return "";
+  return String(block.activity.type || "");
+}
+
+export function mergeMessageBlocks(historyBlocks, liveBlocks, options = {}) {
   const merged = normalizeMessageBlocks(historyBlocks);
+  const live = normalizeMessageBlocks(liveBlocks);
+  const streaming = options.streaming === true;
+  const activeScope = streaming
+    ? blockScopeKey([...live].reverse().find((block) => block.kind === "user"))
+    : "";
   const positions = new Map(merged.map((block, index) => [block.id, index]));
-  for (const block of normalizeMessageBlocks(liveBlocks)) {
-    const position = positions.get(block.id);
-    if (position === undefined) {
-      positions.set(block.id, merged.length);
-      merged.push(block);
-    } else {
-      merged[position] = block;
-    }
+  const historyIds = new Set(positions.keys());
+  const historyActivityTypes = new Map();
+  for (const block of merged) {
+    const scope = blockScopeKey(block);
+    const type = completedActivityType(block);
+    if (!scope || !type) continue;
+    if (!historyActivityTypes.has(scope)) historyActivityTypes.set(scope, new Set());
+    historyActivityTypes.get(scope).add(type);
   }
+  const lastSharedLiveIndex = new Map();
+  live.forEach((block, index) => {
+    const scope = blockScopeKey(block);
+    if (scope && historyIds.has(block.id)) lastSharedLiveIndex.set(scope, index);
+  });
+
+  const reindex = () => {
+    positions.clear();
+    merged.forEach((block, index) => positions.set(block.id, index));
+  };
+  const insertionPosition = (liveIndex) => {
+    for (let index = liveIndex + 1; index < live.length; index += 1) {
+      const next = positions.get(live[index].id);
+      if (next !== undefined) return next;
+    }
+    for (let index = liveIndex - 1; index >= 0; index -= 1) {
+      const previous = positions.get(live[index].id);
+      if (previous !== undefined) return previous + 1;
+    }
+    const scope = blockScopeKey(live[liveIndex]);
+    if (scope) {
+      for (let index = merged.length - 1; index >= 0; index -= 1) {
+        if (blockScopeKey(merged[index]) === scope) return index + 1;
+      }
+    }
+    return merged.length;
+  };
+
+  live.forEach((block, liveIndex) => {
+    const position = positions.get(block.id);
+    if (position !== undefined) {
+      merged[position] = block;
+      return;
+    }
+
+    const scope = blockScopeKey(block);
+    const activityType = completedActivityType(block);
+    // History has already reconciled rollout activity with App Server wrapper
+    // items. Do not append a completed wrapper of the same activity class a
+    // second time. During an active stream, items newer than the last shared
+    // block remain visible until the next settled history refresh owns them.
+    const recoveredDuplicate = Boolean(
+      scope
+      && activityType
+      && historyActivityTypes.get(scope)?.has(activityType)
+      && (
+        scope !== activeScope
+        || liveIndex <= (lastSharedLiveIndex.get(scope) ?? -1)
+      )
+    );
+    if (recoveredDuplicate) return;
+
+    merged.splice(insertionPosition(liveIndex), 0, block);
+    reindex();
+  });
   return merged;
 }
 
@@ -157,7 +226,9 @@ export function createHistoryController(options = {}) {
         return {
           ...capture,
           text: capture.streaming ? String(capture.text || historyText) : historyText,
-          messageBlocks: mergeMessageBlocks(historyBlocks, liveBlocks),
+          messageBlocks: mergeMessageBlocks(historyBlocks, liveBlocks, {
+            streaming: capture.streaming === true,
+          }),
           historyTotalTurns: history.totalTurns,
         };
       }
