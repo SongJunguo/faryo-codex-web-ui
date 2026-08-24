@@ -1,6 +1,18 @@
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 export const BROWSER_ENVELOPE_VERSION = 1;
 
+function applyErrorContract(error, value = {}) {
+  error.errorCode = String(value.errorCode || "");
+  error.errorTitle = String(value.errorTitle || "");
+  error.recovery = String(value.recovery || "");
+  error.retryable =
+    typeof value.retryable === "boolean"
+      ? value.retryable
+      : Boolean(error.retryable);
+  error.payload = value;
+  return error;
+}
+
 export function validateBrowserEnvelope(value, { allowLegacy = true } = {}) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const version = value.envelopeVersion;
@@ -51,13 +63,37 @@ export function createApiClient(options = {}) {
   async function csrfHeaders() {
     if (!routeBase || ownerToken) return {};
     if (!gatewayCsrfToken) {
-      const response = await fetchRequest("/api/csrf", { cache: "no-store" });
-      const data = await response.json();
+      let response;
+      try {
+        response = await fetchRequest("/api/csrf", { cache: "no-store" });
+      } catch (_cause) {
+        throw applyErrorContract(new Error("The browser could not reach Faryo."), {
+          errorCode: "network_unavailable",
+          errorTitle: "Connection unavailable",
+          recovery: "Check this device's network connection and retry.",
+          retryable: true,
+        });
+      }
+      let data;
+      try {
+        data = await response.json();
+      } catch (_cause) {
+        throw applyErrorContract(new Error("Faryo returned an invalid sign-in response."), {
+          errorCode: [401, 403].includes(response.status)
+            ? "auth_required"
+            : "invalid_response",
+          errorTitle: [401, 403].includes(response.status)
+            ? "Sign-in required"
+            : "Invalid server response",
+          recovery: "Refresh this page and sign in again.",
+          retryable: false,
+        });
+      }
       validateBrowserEnvelope(data);
       if (!response.ok || !data.csrf) {
         const error = new Error(data.error || "CSRF token unavailable");
         error.status = response.status;
-        throw error;
+        throw applyErrorContract(error, data);
       }
       gatewayCsrfToken = data.csrf;
     }
@@ -83,12 +119,22 @@ export function createApiClient(options = {}) {
     const requestPath = String(path).startsWith("/api/")
       ? `${routeBase}${path}`
       : String(path);
-    const response = await fetchRequest(requestPath, {
-      ...requestOptions,
-      body,
-      headers,
-      cache: "no-store",
-    });
+    let response;
+    try {
+      response = await fetchRequest(requestPath, {
+        ...requestOptions,
+        body,
+        headers,
+        cache: "no-store",
+      });
+    } catch (_cause) {
+      throw applyErrorContract(new Error("The browser could not reach Faryo."), {
+        errorCode: "network_unavailable",
+        errorTitle: "Connection unavailable",
+        recovery: "Check this device's network connection and retry.",
+        retryable: true,
+      });
+    }
     const text = await response.text();
     let data = {};
     try {
@@ -101,7 +147,22 @@ export function createApiClient(options = {}) {
       );
       error.status = response.status;
       error.nonJson = true;
-      throw error;
+      throw applyErrorContract(error, {
+        errorCode: [401, 403].includes(response.status)
+          ? "auth_required"
+          : [502, 503, 504].includes(response.status)
+            ? "upstream_unavailable"
+            : "invalid_response",
+        errorTitle: [401, 403].includes(response.status)
+          ? "Sign-in required"
+          : [502, 503, 504].includes(response.status)
+            ? "Faryo temporarily unavailable"
+            : "Invalid server response",
+        recovery: [401, 403].includes(response.status)
+          ? "Refresh this page and sign in again."
+          : "Reload the page and retry.",
+        retryable: [502, 503, 504].includes(response.status),
+      });
     }
     validateBrowserEnvelope(data);
     if (!response.ok || data.ok === false) {
@@ -109,8 +170,7 @@ export function createApiClient(options = {}) {
         data.error || `${response.status} ${response.statusText}`,
       );
       error.status = response.status;
-      error.payload = data;
-      throw error;
+      throw applyErrorContract(error, data);
     }
     return data;
   }

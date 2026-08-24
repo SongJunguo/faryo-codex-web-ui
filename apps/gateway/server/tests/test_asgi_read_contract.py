@@ -386,10 +386,24 @@ class AsgiReadContractTest(unittest.TestCase):
         body = json.dumps({"fixture": True}).encode("utf-8")
         asgi_unauthorized = self.request(self.asgi_base, "/api/not-real", method="POST", body=body)
         self.assertEqual(asgi_unauthorized[0], HTTPStatus.UNAUTHORIZED)
-        self.assertEqual(json.loads(asgi_unauthorized[2]), {"ok": False, "error": "unauthorized", "envelopeVersion": 1})
+        unauthorized = json.loads(asgi_unauthorized[2])
+        self.assertFalse(unauthorized["ok"])
+        self.assertEqual(unauthorized["error"], "unauthorized")
+        self.assertEqual(unauthorized["envelopeVersion"], 1)
+        self.assertEqual(unauthorized["errorContractVersion"], 1)
+        self.assertEqual(unauthorized["errorCode"], "auth_required")
+        self.assertFalse(unauthorized["retryable"])
+        self.assertTrue(unauthorized["recovery"])
         asgi_csrf = self.request(self.asgi_base, "/api/not-real", authenticated=True, method="POST", body=body)
         self.assertEqual(asgi_csrf[0], HTTPStatus.FORBIDDEN)
-        self.assertEqual(json.loads(asgi_csrf[2]), {"ok": False, "error": "csrf required", "envelopeVersion": 1})
+        csrf_failure = json.loads(asgi_csrf[2])
+        self.assertFalse(csrf_failure["ok"])
+        self.assertEqual(csrf_failure["error"], "csrf required")
+        self.assertEqual(csrf_failure["envelopeVersion"], 1)
+        self.assertEqual(csrf_failure["errorContractVersion"], 1)
+        self.assertEqual(csrf_failure["errorCode"], "csrf_required")
+        self.assertFalse(csrf_failure["retryable"])
+        self.assertTrue(csrf_failure["recovery"])
         csrf = gateway_security.csrf_token(self.config.cookie_secret, "tester", self.config.auth_epoch("tester"))
         headers = {legacy.CSRF_HEADER: csrf, "Content-Type": "application/json"}
         asgi_missing = self.request(
@@ -401,7 +415,14 @@ class AsgiReadContractTest(unittest.TestCase):
             extra_headers=headers,
         )
         self.assertEqual(asgi_missing[0], HTTPStatus.NOT_FOUND)
-        self.assertEqual(json.loads(asgi_missing[2]), {"ok": False, "error": "not found", "envelopeVersion": 1})
+        missing = json.loads(asgi_missing[2])
+        self.assertFalse(missing["ok"])
+        self.assertEqual(missing["error"], "not found")
+        self.assertEqual(missing["envelopeVersion"], 1)
+        self.assertEqual(missing["errorContractVersion"], 1)
+        self.assertEqual(missing["errorCode"], "not_found")
+        self.assertFalse(missing["retryable"])
+        self.assertTrue(missing["recovery"])
 
     def test_login_success_and_failure_contracts_match(self) -> None:
         headers = {"Content-Type": "application/x-www-form-urlencoded"}
@@ -523,7 +544,14 @@ class AsgiReadContractTest(unittest.TestCase):
         body = json.dumps({"session": "fixture-session"}).encode("utf-8")
         asgi_result = self.request(self.asgi_base, "/lab/api/interaction/respond", authenticated=True, method="POST", body=body)
         self.assertEqual(asgi_result[0], HTTPStatus.FORBIDDEN)
-        self.assertEqual(json.loads(asgi_result[2]), {"ok": False, "error": "csrf required", "envelopeVersion": 1})
+        failure = json.loads(asgi_result[2])
+        self.assertFalse(failure["ok"])
+        self.assertEqual(failure["error"], "csrf required")
+        self.assertEqual(failure["envelopeVersion"], 1)
+        self.assertEqual(failure["errorContractVersion"], 1)
+        self.assertEqual(failure["errorCode"], "csrf_required")
+        self.assertFalse(failure["retryable"])
+        self.assertTrue(failure["recovery"])
 
     def test_unmapped_owner_api_post_is_proxied_without_control_audit(self) -> None:
         body = json.dumps({"session": "fixture-session"}).encode("utf-8")

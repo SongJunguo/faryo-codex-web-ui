@@ -45,6 +45,17 @@ class OwnerFixture(BaseHTTPRequestHandler):
         if self.path == "/api/fail":
             payload = {"ok": False, "error": "fixture failure"}
             status = HTTPStatus.CONFLICT
+        elif self.path == "/api/html":
+            data = b"<!doctype html><title>Bad gateway</title>"
+            self.send_response(HTTPStatus.BAD_GATEWAY)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        elif self.path == "/api/list":
+            payload = ["unexpected", "shape"]
+            status = HTTPStatus.OK
         else:
             payload = {"ok": True, "size": len(body)}
             status = HTTPStatus.OK
@@ -92,6 +103,16 @@ class OwnerClientTest(unittest.TestCase):
         failed = self.client.json_request("lab", "/api/fail", {}, "tester")
         self.assertFalse(failed["ok"])
         self.assertEqual(failed["httpStatus"], HTTPStatus.CONFLICT)
+
+    def test_json_request_rejects_non_json_and_non_object_responses(self) -> None:
+        for path in ("/api/html", "/api/list"):
+            with self.subTest(path=path):
+                result = self.client.json_request("lab", path, {}, "tester")
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["httpStatus"], HTTPStatus.BAD_GATEWAY)
+                self.assertEqual(result["errorCode"], "invalid_response")
+                self.assertTrue(result["retryable"])
+                self.assertNotIn("doctype", repr(result).lower())
 
     def test_attachment_request_sanitizes_filename_and_uses_fixed_field(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -118,7 +118,9 @@ class ThreadArchiveTest(unittest.TestCase):
                 server.change_codex_thread_archive_state(self.config, "thread-a", True, "/workspace")
 
         self.assertEqual(raised.exception.status, server.HTTPStatus.CONFLICT)
-        self.assertEqual(str(raised.exception), "Codex thread lifecycle request failed")
+        self.assertEqual(str(raised.exception), "This conversation is still open in another Codex client.")
+        self.assertEqual(raised.exception.code, "thread_in_use")
+        self.assertIn("Close", raised.exception.recovery)
         self.assertNotIn("/private", str(raised.exception))
 
 

@@ -66,11 +66,22 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                     if isinstance(result, dict):
                         target = str(result.get("session") or target)
                         idempotent = bool(result.get("duplicate") or result.get("idempotent"))
-                    response = Response(
-                        upstream.body,
-                        status_code=status,
-                        headers=support.forwarded_response_headers(upstream.headers),
-                    )
+                    if isinstance(result, dict) and result.get("ok") is False:
+                        response = support.json_response(
+                            support.forwarded_error(result, status, f"Owner {action or 'action'} failed"),
+                            status,
+                        )
+                    elif status >= 400 and (not isinstance(result, dict) or not result):
+                        response = support.json_response(
+                            support.forwarded_error({}, status, "Owner returned an invalid response"),
+                            status,
+                        )
+                    else:
+                        response = Response(
+                            upstream.body,
+                            status_code=status,
+                            headers=support.forwarded_response_headers(upstream.headers),
+                        )
                 except owner_client.OwnerTransportError:
                     status = HTTPStatus.BAD_GATEWAY
                     response = support.json_response({"ok": False, "error": "upstream unavailable"}, status)
@@ -135,10 +146,9 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                         )
                     )
                     if not result.get("ok"):
-                        raw_status = int(result.get("httpStatus") or HTTPStatus.BAD_GATEWAY)
-                        status = raw_status if 100 <= raw_status <= 599 else HTTPStatus.BAD_GATEWAY
+                        status = support.upstream_status(result)
                         response = support.json_response(
-                            {"ok": False, "error": str(result.get("error") or f"owner {action} failed")},
+                            support.forwarded_error(result, status, f"Owner {action} failed"),
                             status,
                         )
                     else:

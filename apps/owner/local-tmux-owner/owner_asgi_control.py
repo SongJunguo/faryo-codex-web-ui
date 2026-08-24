@@ -49,7 +49,14 @@ class OwnerControlRoutes:
             archived = path.endswith("/archive")
             thread_id = str(payload.get("agent_session_id") or payload.get("agentSessionId") or "")
             if self.support.runtime.registry.by_thread(thread_id) is not None:
-                raise self.core.OwnerError("active agent sessions cannot be archived", HTTPStatus.CONFLICT)
+                definition = self.core.error_contract.ERROR_DEFINITIONS["thread_in_use"]
+                raise self.core.OwnerError(
+                    definition.message,
+                    HTTPStatus.CONFLICT,
+                    code="thread_in_use",
+                    title=definition.title,
+                    recovery=definition.recovery,
+                )
 
             def lifecycle_rpc(method: str, selected_thread_id: str, timeout: float) -> dict[str, Any]:
                 try:

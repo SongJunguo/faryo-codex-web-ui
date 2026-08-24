@@ -343,13 +343,16 @@ class GatewayCsrfContractTest(unittest.TestCase):
         self.assertNotIn("private prompt body", repr(audit))
 
     def test_csrf_denial_is_audited_without_reading_request_body(self) -> None:
-        status, _data = self.request(
+        status, data = self.request(
             "POST",
             f"/{self.route}/api/interrupt",
             {"session": "private-session"},
         )
 
         self.assertEqual(status, HTTPStatus.FORBIDDEN)
+        self.assertEqual(data["errorCode"], "csrf_required")
+        self.assertEqual(data["errorContractVersion"], 1)
+        self.assertIn("Refresh", data["recovery"])
         self.assertEqual(len(self.config.audit_calls), 1)
         audit = self.config.audit_calls[0]
         self.assertEqual((audit["action"], audit["target"], audit["status"]), ("interrupt", "", 403))
@@ -439,7 +442,9 @@ class GatewayCsrfContractTest(unittest.TestCase):
         )
 
         self.assertEqual(status, HTTPStatus.CONFLICT)
-        self.assertEqual(data["error"], "active agent sessions cannot be archived")
+        self.assertEqual(data["errorCode"], "thread_in_use")
+        self.assertEqual(data["errorTitle"], "Conversation still open")
+        self.assertIn("Close", data["recovery"])
         self.assertEqual(self.config.audit_calls[-1]["action"], "archive")
         self.assertEqual(self.config.audit_calls[-1]["status"], HTTPStatus.CONFLICT)
 
@@ -512,6 +517,35 @@ class GatewayCsrfContractTest(unittest.TestCase):
         self.assertEqual(first_launch["client_launch_id"], launch_id)
         self.assertEqual(retried_launch, first_launch)
         sleep.assert_called_once_with(0.25)
+
+    def test_new_session_preserves_owner_error_contract_and_status(self) -> None:
+        csrf = self.csrf_token()
+        responses = [
+            {"ok": True, "activeSessions": [], "sessions": []},
+            {
+                "ok": False,
+                "httpStatus": 409,
+                "errorContractVersion": 1,
+                "errorCode": "agent_limit",
+                "errorTitle": "Agent limit reached",
+                "error": "This workstation is already running the configured number of Codex sessions.",
+                "recovery": "Close an unused running session and retry.",
+                "retryable": False,
+            },
+        ]
+        with mock.patch.object(owner_client.OwnerClient, "json_request", side_effect=responses):
+            status, data = self.request(
+                "POST",
+                "/api/agent/new",
+                {"route": self.route, "command": "codex", "client_launch_id": "web-contract-launch-123"},
+                {gateway.CSRF_HEADER: csrf},
+            )
+
+        self.assertEqual(status, HTTPStatus.CONFLICT)
+        self.assertEqual(data["errorCode"], "agent_limit")
+        self.assertEqual(data["errorTitle"], "Agent limit reached")
+        self.assertIn("Close", data["recovery"])
+        self.assertFalse(data["retryable"])
 
     def test_owner_proxy_post_requires_gateway_csrf(self) -> None:
         status, data = self.request("POST", f"/{self.route}/api/send", {"text": "blocked"})

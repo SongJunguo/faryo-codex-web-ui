@@ -17,6 +17,7 @@ from starlette.responses import FileResponse, Response
 import owner_http
 import session_namespace
 from faryo_cli import browser_contract
+from faryo_cli import error_contract
 
 
 class SecurityHeadersMiddleware:
@@ -53,6 +54,8 @@ class OwnerAsgiSupport:
 
     @staticmethod
     def json_response(value: dict[str, Any], status: int = HTTPStatus.OK) -> Response:
+        if value.get("ok") is False:
+            value = error_contract.normalize_error_payload(value, int(status))
         body = json.dumps(
             browser_contract.wrap_response(value),
             ensure_ascii=False,
@@ -185,8 +188,18 @@ class OwnerAsgiSupport:
 
     def error_response(self, error: BaseException) -> Response:
         status = getattr(error, "status", HTTPStatus.INTERNAL_SERVER_ERROR)
-        message = str(error) if isinstance(error, self.core.OwnerError) else "internal server error"
+        known = isinstance(error, self.core.OwnerError)
+        message = str(error) if known else ""
+        payload = error_contract.error_payload(
+            message,
+            status=int(status),
+            code=str(getattr(error, "code", "")) if known else "internal_error",
+            title=str(getattr(error, "title", "")) if known else "",
+            retryable=getattr(error, "retryable", None) if known else None,
+            recovery=str(getattr(error, "recovery", "")) if known else "",
+            extra={"updatedAt": self.core.now_iso()},
+        )
         return self.json_response(
-            {"ok": False, "error": message, "updatedAt": self.core.now_iso()},
+            payload,
             int(status),
         )

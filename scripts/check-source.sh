@@ -145,6 +145,7 @@ release_checks() {
     "$ROOT/src/faryo_cli/cli.py" \
     "$ROOT/src/faryo_cli/codex_runtime.py" \
     "$ROOT/src/faryo_cli/diagnostics.py" \
+    "$ROOT/src/faryo_cli/error_contract.py" \
     "$ROOT/src/faryo_cli/installer.py" \
     "$ROOT/src/faryo_cli/maintenance.py" \
     "$ROOT/src/faryo_cli/migration.py" \

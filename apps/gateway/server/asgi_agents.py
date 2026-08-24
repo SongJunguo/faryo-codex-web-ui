@@ -101,9 +101,9 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                     else:
                         session = legacy.clean_session_id(str(result.get("session") or "")) if result.get("ok") else ""
                     if not result.get("requiresWorkingDirectory") and not session:
-                        status = HTTPStatus.BAD_GATEWAY
+                        status = support.upstream_status(result)
                         response = support.json_response(
-                            {"ok": False, "error": result.get("error") or "owner resume failed"},
+                            support.forwarded_error(result, status, "Owner resume failed"),
                             status,
                         )
                     elif session:
@@ -243,9 +243,9 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                         result = await start(launch)
                     session = legacy.clean_session_id(str(result.get("session") or "")) if result.get("ok") else ""
                     if not session:
-                        status = HTTPStatus.BAD_GATEWAY
+                        status = support.upstream_status(result)
                         response = support.json_response(
-                            {"ok": False, "error": result.get("error") or "owner new session failed"},
+                            support.forwarded_error(result, status, "Owner new session failed"),
                             status,
                         )
                     else:

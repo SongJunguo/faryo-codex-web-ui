@@ -843,7 +843,11 @@
       'single session mode': 'Single-session mode is enabled.',
     };
     const detail = messageMap[raw] || raw;
-    return status ? `HTTP ${status}: ${detail}` : detail;
+    const recovery = String(err?.recovery || err?.payload?.recovery || '').trim();
+    const title = String(err?.errorTitle || err?.payload?.errorTitle || '').trim();
+    const explanation = title && title !== detail ? `${title}: ${detail}` : detail;
+    const body = recovery && recovery !== explanation ? `${explanation}\n${recovery}` : explanation;
+    return err?.errorCode ? body : status ? `HTTP ${status}: ${body}` : body;
   }
 
   function setBusy(isBusy) {

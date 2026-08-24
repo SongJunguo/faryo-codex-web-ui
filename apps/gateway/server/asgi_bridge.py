@@ -17,6 +17,13 @@ import gateway_security
 import owner_client
 
 
+class BridgeOwnerError(Exception):
+    def __init__(self, result: dict[str, Any], fallback: str) -> None:
+        super().__init__(fallback)
+        self.result = result
+        self.fallback = fallback
+
+
 def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: Any) -> list[Route]:
     async def bridge_package_create(request: Request) -> Response:
         current = support.username(request)
@@ -112,9 +119,7 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                                 )
                                 owner_path = str(uploaded.get("path") or "")
                                 if not uploaded.get("ok") or not owner_path:
-                                    raise ValueError(
-                                        str(uploaded.get("error") or "owner attachment upload failed")
-                                    )
+                                    raise BridgeOwnerError(uploaded, "Owner attachment upload failed")
                                 delivered_asset = dict(asset)
                                 delivered_asset["source_path"] = str(path)
                                 delivered_asset["path"] = owner_path
@@ -137,9 +142,9 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                                 )
                             )
                             if not resume.get("ok"):
-                                status = HTTPStatus.BAD_GATEWAY
+                                status = support.upstream_status(resume)
                                 response = support.json_response(
-                                    {"ok": False, "error": resume.get("error") or "owner resume failed"},
+                                    support.forwarded_error(resume, status, "Owner resume failed"),
                                     status,
                                 )
                                 target_session = ""
@@ -166,9 +171,9 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                                 )
                             )
                             if not sent.get("ok"):
-                                status = HTTPStatus.BAD_GATEWAY
+                                status = support.upstream_status(sent)
                                 response = support.json_response(
-                                    {"ok": False, "error": sent.get("error") or "owner inject failed"},
+                                    support.forwarded_error(sent, status, "Owner inject failed"),
                                     status,
                                 )
                             else:
@@ -187,6 +192,12 @@ def routes(legacy: Any, config: Any, client: owner_client.OwnerClient, support: 
                                     "redirect": f"/{route}/?session={target_session}",
                                     "package": package,
                                 })
+            except BridgeOwnerError as exc:
+                status = support.upstream_status(exc.result)
+                response = support.json_response(
+                    support.forwarded_error(exc.result, status, exc.fallback),
+                    status,
+                )
             except ValueError as exc:
                 status = HTTPStatus.BAD_REQUEST
                 response = support.json_response({"ok": False, "error": str(exc)}, status)

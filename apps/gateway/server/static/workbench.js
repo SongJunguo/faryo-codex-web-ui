@@ -2,6 +2,17 @@ let installPrompt = null,
   lastAnchorRect = null,
   csrfToken = null;
 const BROWSER_ENVELOPE_VERSION = 1;
+function applyErrorContract(error, value = {}) {
+  error.errorCode = String(value.errorCode || "");
+  error.errorTitle = String(value.errorTitle || "");
+  error.recovery = String(value.recovery || "");
+  error.retryable =
+    typeof value.retryable === "boolean"
+      ? value.retryable
+      : Boolean(error.retryable);
+  error.payload = value;
+  return error;
+}
 function validateBrowserEnvelope(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   if (
@@ -61,7 +72,27 @@ async function readJsonResponse(response, label) {
     const error = new Error(message);
     error.status = response.status;
     error.retryable = temporary;
-    throw error;
+    throw applyErrorContract(error, {
+      errorCode:
+        authPage || [401, 403].includes(response.status)
+          ? "auth_required"
+          : temporary
+            ? "upstream_unavailable"
+            : "invalid_response",
+      errorTitle:
+        authPage || [401, 403].includes(response.status)
+          ? "Sign-in required"
+          : temporary
+            ? "Faryo temporarily unavailable"
+            : "Invalid server response",
+      recovery:
+        authPage || [401, 403].includes(response.status)
+          ? "Refresh this page and sign in again."
+          : temporary
+            ? "Wait a moment and retry; your conversation history is retained."
+            : "Reload the page and retry.",
+      retryable: temporary,
+    });
   }
   validateBrowserEnvelope(data);
   if (!response.ok || data.ok === false) {
@@ -70,12 +101,22 @@ async function readJsonResponse(response, label) {
     );
     error.status = response.status;
     error.retryable = [502, 503, 504].includes(response.status);
-    throw error;
+    throw applyErrorContract(error, data);
   }
   return data;
 }
 async function fetchJson(url, options, label) {
-  const response = await fetch(url, versionedRequestOptions(options));
+  let response;
+  try {
+    response = await fetch(url, versionedRequestOptions(options));
+  } catch (_cause) {
+    throw applyErrorContract(new Error("The browser could not reach Faryo."), {
+      errorCode: "network_unavailable",
+      errorTitle: "Connection unavailable",
+      recovery: "Check this device's network connection and retry.",
+      retryable: true,
+    });
+  }
   return readJsonResponse(response, label || "Request");
 }
 async function csrfHeaders() {
@@ -631,7 +672,13 @@ async function withBusy(task) {
   try {
     return await task();
   } catch (error) {
-    await notice("Action failed", error.message || String(error));
+    const message = error.message || String(error),
+      recovery = String(error.recovery || "").trim(),
+      body =
+        recovery && recovery !== message
+          ? `${message}\n\n${recovery}`
+          : message;
+    await notice(error.errorTitle || "Action failed", body);
   } finally {
     actionBusy = false;
   }

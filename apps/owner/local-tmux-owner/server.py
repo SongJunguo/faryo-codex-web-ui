@@ -49,7 +49,7 @@ import session_namespace
 import codex_tui_interactions
 import interaction_service
 import command_timeline
-from faryo_cli import codex_runtime, session_backend
+from faryo_cli import codex_runtime, error_contract, session_backend
 
 SHARED_DIR = Path(__file__).resolve().parents[2] / "shared"
 if str(SHARED_DIR) not in sys.path:
@@ -440,9 +440,22 @@ def now_iso() -> str:
 
 
 class OwnerError(Exception):
-    def __init__(self, message: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST):
+    def __init__(
+        self,
+        message: str,
+        status: HTTPStatus = HTTPStatus.BAD_REQUEST,
+        *,
+        code: str = "",
+        title: str = "",
+        retryable: bool | None = None,
+        recovery: str = "",
+    ):
         super().__init__(message)
         self.status = status
+        self.code = code
+        self.title = title
+        self.retryable = retryable
+        self.recovery = recovery
 
 
 class Config:
@@ -622,7 +635,14 @@ def change_codex_thread_archive_state(
         return {"agentSessionId": clean_id, "archived": archived, "duplicate": True}
     active, superseded = active_codex_thread_state(config)
     if clean_id in active or clean_id in superseded:
-        raise OwnerError("active agent sessions cannot be archived", HTTPStatus.CONFLICT)
+        definition = error_contract.ERROR_DEFINITIONS["thread_in_use"]
+        raise OwnerError(
+            definition.message,
+            HTTPStatus.CONFLICT,
+            code="thread_in_use",
+            title=definition.title,
+            recovery=definition.recovery,
+        )
     method = "thread/archive" if archived else "thread/unarchive"
     response = (
         lifecycle_rpc(method, clean_id, 5.0)
@@ -630,9 +650,26 @@ def change_codex_thread_archive_state(
         else codex_app_server_rpc(method, {"threadId": clean_id}, timeout=5.0)
     )
     if not response.get("ok"):
+        lifecycle_error = str(response.get("error") or "")
+        lifecycle_status = codex_thread_lifecycle_error_status(lifecycle_error)
+        if lifecycle_status == HTTPStatus.CONFLICT:
+            definition = error_contract.ERROR_DEFINITIONS["thread_in_use"]
+            raise OwnerError(
+                definition.message,
+                lifecycle_status,
+                code="thread_in_use",
+                title=definition.title,
+                recovery=definition.recovery,
+            )
+        lifecycle_code = "not_found" if lifecycle_status == HTTPStatus.NOT_FOUND else "upstream_unavailable"
+        definition = error_contract.ERROR_DEFINITIONS[lifecycle_code]
         raise OwnerError(
-            "Codex thread lifecycle request failed",
-            codex_thread_lifecycle_error_status(str(response.get("error") or "")),
+            definition.message,
+            lifecycle_status,
+            code=lifecycle_code,
+            title=definition.title,
+            retryable=definition.retryable,
+            recovery=definition.recovery,
         )
     deadline = time.monotonic() + AGENT_ARCHIVE_VERIFY_TIMEOUT
     while time.monotonic() < deadline:

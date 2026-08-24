@@ -15,6 +15,7 @@ from starlette.responses import HTMLResponse, Response
 import gateway_security
 import owner_client
 from faryo_cli import browser_contract
+from faryo_cli import error_contract
 
 
 class SecurityHeadersMiddleware:
@@ -61,9 +62,23 @@ class AsgiSupport:
 
     @staticmethod
     def json_response(value: dict[str, Any], status: int = HTTPStatus.OK) -> Response:
+        if value.get("ok") is False:
+            value = error_contract.normalize_error_payload(value, int(status))
         payload = browser_contract.wrap_response(value) if "ok" in value else dict(value)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         return Response(body, status_code=status, headers={"Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store"})
+
+    @staticmethod
+    def forwarded_error(value: dict[str, Any] | None, status: int, fallback: str) -> dict[str, Any]:
+        return error_contract.forward_error_payload(value, status=int(status), fallback=fallback)
+
+    @staticmethod
+    def upstream_status(value: dict[str, Any] | None, fallback: int = HTTPStatus.BAD_GATEWAY) -> int:
+        try:
+            status = int((value or {}).get("httpStatus") or fallback)
+        except (TypeError, ValueError):
+            return int(fallback)
+        return status if 100 <= status <= 599 else int(fallback)
 
     def forwarded_request_headers(self, request: Request) -> dict[str, str]:
         return {

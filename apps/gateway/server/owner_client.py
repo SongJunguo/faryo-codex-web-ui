@@ -11,6 +11,8 @@ import socket
 import threading
 from typing import Any, Callable, Mapping
 
+from faryo_cli import error_contract
+
 
 INTERNAL_HEADER_NAMES = {
     "host",
@@ -145,16 +147,36 @@ class OwnerClient:
             response = connection.getresponse()
             response_body = response.read()
         except (OSError, UnicodeError) as exc:
-            return {"ok": False, "error": str(exc), "retryable": True, "transportError": True}
+            return error_contract.error_payload(
+                str(exc),
+                status=502,
+                code="upstream_unavailable",
+                retryable=True,
+                extra={"transportError": True, "httpStatus": 502},
+            )
         finally:
             connection.close()
         try:
             result = json.loads(response_body.decode("utf-8"))
         except Exception:
-            result = {"ok": False, "error": f"owner returned HTTP {response.status}"}
+            result = error_contract.error_payload(
+                "Owner returned an invalid response",
+                status=response.status if response.status >= 400 else 502,
+                code="invalid_response",
+                retryable=True,
+                extra={"httpStatus": response.status if response.status >= 400 else 502},
+            )
         if response.status >= 400 and isinstance(result, dict):
             result.update({"ok": False, "httpStatus": response.status})
-        return result if isinstance(result, dict) else {"ok": False, "error": "invalid owner response"}
+        if isinstance(result, dict):
+            return result
+        return error_contract.error_payload(
+            "Owner returned an invalid response",
+            status=502,
+            code="invalid_response",
+            retryable=True,
+            extra={"httpStatus": 502},
+        )
 
     def raw_request(
         self,
@@ -224,13 +246,33 @@ class OwnerClient:
             response = connection.getresponse()
             response_body = response.read()
         except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+            return error_contract.error_payload(
+                str(exc),
+                status=502,
+                code="upstream_unavailable",
+                retryable=True,
+                extra={"transportError": True, "httpStatus": 502},
+            )
         finally:
             connection.close()
         try:
             result = json.loads(response_body.decode("utf-8"))
         except Exception:
-            result = {"ok": False, "error": f"owner returned HTTP {response.status}"}
+            result = error_contract.error_payload(
+                "Owner returned an invalid response",
+                status=response.status if response.status >= 400 else 502,
+                code="invalid_response",
+                retryable=True,
+                extra={"httpStatus": response.status if response.status >= 400 else 502},
+            )
         if response.status >= 400 and isinstance(result, dict):
             result.update({"ok": False, "httpStatus": response.status})
-        return result if isinstance(result, dict) else {"ok": False, "error": "invalid owner response"}
+        if isinstance(result, dict):
+            return result
+        return error_contract.error_payload(
+            "Owner returned an invalid response",
+            status=502,
+            code="invalid_response",
+            retryable=True,
+            extra={"httpStatus": 502},
+        )

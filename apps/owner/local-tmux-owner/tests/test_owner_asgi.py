@@ -259,7 +259,13 @@ class OwnerAsgiTest(unittest.TestCase):
 
         status, _headers, body = self.request("GET", "/api/status?session=faryo1")
         self.assertEqual(status, 401)
-        self.assertEqual(json.loads(body)["error"], "unauthorized")
+        unauthorized = json.loads(body)
+        self.assertEqual(unauthorized["error"], "unauthorized")
+        self.assertEqual(unauthorized["errorContractVersion"], 1)
+        self.assertEqual(unauthorized["errorCode"], "auth_required")
+        self.assertEqual(unauthorized["errorTitle"], "Sign-in required")
+        self.assertFalse(unauthorized["retryable"])
+        self.assertIn("Refresh", unauthorized["recovery"])
 
         status, headers, body = self.request(
             "GET",
@@ -584,7 +590,9 @@ class OwnerAsgiTest(unittest.TestCase):
                 )
                 self.assertEqual(status, 409, body)
                 self.assertEqual(headers.get("cache-control"), "no-store")
-                self.assertIn("multiple backends", json.loads(body)["error"])
+                payload = json.loads(body)
+                self.assertEqual(payload["errorCode"], "backend_conflict")
+                self.assertEqual(payload["errorTitle"], "Session routing conflict")
 
         self.assertEqual(self.runtime.sent, [])
 
@@ -625,7 +633,10 @@ class OwnerAsgiTest(unittest.TestCase):
             )
 
         self.assertEqual(status, 409)
-        self.assertIn("Codex App Server", json.loads(body)["error"])
+        payload = json.loads(body)
+        self.assertEqual(payload["errorCode"], "thread_in_use")
+        self.assertEqual(payload["errorTitle"], "Conversation still open")
+        self.assertIn("Close", payload["recovery"])
 
 
 if __name__ == "__main__":

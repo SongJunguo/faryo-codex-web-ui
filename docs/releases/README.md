@@ -8,7 +8,7 @@ fork's source-only GitHub Release notes.
 
 The maintained fork is source-only and Codex-focused. Use the repository root
 [`README.md`](../../README.md) for current scope, deployment, and validation.
-The current maintained release is [`v1.11.10`](v1.11.10.md). It prevents
-competing Codex writers before resume, removes the production Owner's redundant
-stdio App Server helper, and releases the final closed Web writer immediately.
+The current maintained release is [`v1.11.11`](v1.11.11.md). It adds one
+versioned, privacy-safe error contract across Owner, Gateway and both browser
+surfaces, preserving actionable conflict and recovery semantics end to end.
 The source-only distribution and security boundary are unchanged.

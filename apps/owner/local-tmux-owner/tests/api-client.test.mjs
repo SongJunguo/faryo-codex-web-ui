@@ -123,6 +123,59 @@ test("non-JSON responses become bounded API errors", async () => {
 
   await assert.rejects(
     client.request("/api/status"),
-    (error) => error.status === 502 && error.nonJson === true,
+    (error) =>
+      error.status === 502 &&
+      error.nonJson === true &&
+      error.errorCode === "upstream_unavailable" &&
+      error.retryable === true &&
+      error.recovery.includes("Reload"),
+  );
+});
+
+test("structured server errors preserve recovery metadata", async () => {
+  const client = createApiClient({
+    fetch: async () =>
+      response(
+        {
+          ok: false,
+          envelopeVersion: 1,
+          errorContractVersion: 1,
+          errorCode: "thread_in_use",
+          errorTitle: "Conversation still open",
+          error: "This conversation is still open in another Codex client.",
+          recovery: "Close that Codex client and retry.",
+          retryable: false,
+        },
+        { ok: false, status: 409, statusText: "Conflict" },
+      ),
+  });
+
+  await assert.rejects(
+    client.request("/api/agent-session/archive"),
+    (error) =>
+      error.status === 409 &&
+      error.errorCode === "thread_in_use" &&
+      error.errorTitle === "Conversation still open" &&
+      error.recovery.includes("Close") &&
+      error.retryable === false,
+  );
+});
+
+test("network failures become retryable connection errors", async () => {
+  const client = createApiClient({
+    ownerToken: "fixture-owner-token",
+    fetch: async () => {
+      throw new TypeError("private network stack detail");
+    },
+  });
+
+  await assert.rejects(
+    client.request("/api/status"),
+    (error) =>
+      error.errorCode === "network_unavailable" &&
+      error.errorTitle === "Connection unavailable" &&
+      error.retryable === true &&
+      error.recovery.includes("network connection") &&
+      !error.message.includes("private"),
   );
 });

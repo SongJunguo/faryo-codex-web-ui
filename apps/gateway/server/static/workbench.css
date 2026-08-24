@@ -597,7 +597,7 @@ main {
 #modalBody {
   overflow: visible;
   text-overflow: clip;
-  white-space: normal;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   word-break: break-word;
 }

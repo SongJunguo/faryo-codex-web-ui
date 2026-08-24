@@ -532,19 +532,55 @@ await withBrowser({
   const responseErrors = await evaluate(`(async () => {
     const capture = async (response, label) => {
       try { await readJsonResponse(response, label); return { failed: false }; }
-      catch (error) { return { failed: true, message: error.message, retryable: Boolean(error.retryable) }; }
+      catch (error) { return { failed: true, message: error.message, retryable: Boolean(error.retryable), code: error.errorCode || '', title: error.errorTitle || '', recovery: error.recovery || '' }; }
     };
     const temporary = await capture(new Response('<!DOCTYPE html><html><title>Bad gateway</title></html>', { status: 502, headers: { 'Content-Type': 'text/html' } }), 'Start Codex');
     const expired = await capture(new Response('<!DOCTYPE html><html><title>Cloudflare Access</title></html>', { status: 200, headers: { 'Content-Type': 'text/html' } }), 'Start Codex');
+    const occupied = await capture(new Response(JSON.stringify({ok:false,errorContractVersion:1,errorCode:'thread_in_use',errorTitle:'Conversation still open',error:'This conversation is still open in another Codex client.',recovery:'Close that Codex client and retry.',retryable:false}), { status: 409, headers: { 'Content-Type': 'application/json' } }), 'Archive session');
     const json = await readJsonResponse(new Response('{"ok":true,"value":7}', { status: 200, headers: { 'Content-Type': 'application/json' } }), 'Start Codex');
-    return { temporary, expired, jsonValue: json.value };
+    return { temporary, expired, occupied, jsonValue: json.value };
   })()`);
   if (!responseErrors?.temporary?.failed || !responseErrors.temporary.retryable
     || !responseErrors.temporary.message.includes('temporarily unavailable')
+    || responseErrors.temporary.code !== 'upstream_unavailable'
     || !responseErrors?.expired?.failed || responseErrors.expired.retryable
     || !responseErrors.expired.message.includes('sign-in expired')
+    || responseErrors.expired.code !== 'auth_required'
+    || responseErrors?.occupied?.code !== 'thread_in_use'
+    || responseErrors.occupied.title !== 'Conversation still open'
+    || !responseErrors.occupied.recovery.includes('Close')
     || responseErrors.jsonValue !== 7) {
     throw new Error(`Gateway API response handling is not robust: ${JSON.stringify(responseErrors)}`);
+  }
+
+  await evaluate(`void withBusy(async () => {
+    throw applyErrorContract(new Error('This conversation is still open in another Codex client.'), {
+      errorCode: 'thread_in_use',
+      errorTitle: 'Conversation still open',
+      recovery: 'Close that Codex client and retry.',
+      retryable: false,
+    });
+  })`);
+  let recoveryModal = null;
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await delay(50);
+    recoveryModal = await evaluate(`(() => ({
+      open: document.getElementById('modal')?.classList.contains('open') || false,
+      title: document.getElementById('modalTitle')?.textContent || '',
+      body: document.getElementById('modalBody')?.textContent || '',
+    }))()`);
+    if (recoveryModal?.open) break;
+  }
+  if (recoveryModal?.title !== 'Conversation still open'
+    || !recoveryModal.body.includes('another Codex client')
+    || !recoveryModal.body.includes('Close that Codex client')) {
+    throw new Error(`Gateway recovery modal lost error metadata: ${JSON.stringify(recoveryModal)}`);
+  }
+  await evaluate(`document.querySelector('#modalChoices button')?.click()`);
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await delay(25);
+    if (await evaluate(`!document.getElementById('modal')?.classList.contains('open') && !actionBusy`)) break;
+    if (attempt === 29) throw new Error('Gateway recovery modal did not release the busy state');
   }
 
   const directoryOverlap = await evaluate(`(() => {
