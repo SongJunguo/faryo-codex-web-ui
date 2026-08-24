@@ -1,9 +1,10 @@
 # Faryo Owner Architecture
 
-Faryo Owner is the local Codex execution layer. It owns the private Codex App
-Server connection and the compatibility control surface for existing Codex TUI
-sessions in `tmux`. It does not own the public entry point, account login, path
-routing, or Cloudflare Access.
+Faryo Owner is the local Codex execution layer. It owns one read-only Codex App
+Server control connection, one isolated worker connection per structured Web
+session, and the compatibility control surface for existing Codex TUI sessions
+in `tmux`. It does not own the public entry point, account login, path routing,
+or Cloudflare Access.
 
 `Owner` is an internal component name. It is not the Faryo product name or a
 public brand surface.
@@ -15,7 +16,8 @@ Faryo Gateway
   -> route port or SSH reverse tunnel
   -> local execution endpoint 127.0.0.1:8765
   -> faryo-owner.service
-     -> private Codex App Server socket -> Codex thread (default)
+     -> private control socket -> account/model/history lifecycle reads
+     -> private worker socket -> one Codex Web thread (default)
      -> tmux target session -> Codex TUI (compatibility)
 ```
 
@@ -30,6 +32,12 @@ Gateway or used only for local smoke/status checks.
   process; it does not run in a service tmux. Its `KillMode=process` contract is
   mandatory: restarting or updating the Web bridge must not signal tmux/Codex
   descendants that were originally launched from Owner.
+- `faryo-appserver.service`: read-only control plane. It must never call
+  `thread/start` or `thread/resume` for a Faryo Web session.
+- `faryo-appserver-worker@<opaque>.service`: one official Codex App Server
+  process, private Unix socket, pending-RPC set and failure circuit per Web
+  session. The opaque instance is validated before it reaches systemd and is
+  never shown to the browser.
 - A newly created Codex is not declared ready on its first transient composer
   frame. Owner requires a continuous ready interval so the later MCP-startup
   phase can reset the gate; a recognized startup interaction remains available
@@ -140,8 +148,13 @@ but the default upload destination should come from the Faryo data directory.
 - `owner_http.py` owns browser security headers, query-redacted log paths,
   Owner-token validation, bounded JSON/multipart parsing, gzip JSON and file
   byte responses. The Handler delegates these primitives and keeps routing.
-- `appserver_runtime.py` owns the production Unix-socket client and the bounded
-  compatibility RPC allowlist used by history, goal and rate-limit reads.
+- `appserver_runtime.py` owns the read-only control connection, actors and
+  browser-facing orchestration. `appserver_session_supervisor.py` owns isolated
+  worker clients, generations, bounded reconnect, probes and circuit breakers;
+  `src/faryo_cli/appserver_workers.py` is the only systemd/socket identity
+  boundary. History, lifecycle and account/model reads stay on the bounded
+  control allowlist, while turns, commands, goals and interactions route only to
+  the matching worker.
   `codex_app_server.py` retains the serialized stdio fallback only for
   standalone callers outside the ASGI composition root.
 - `appserver_session.py` projects official tool item types and states into a

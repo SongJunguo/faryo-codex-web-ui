@@ -79,7 +79,7 @@ The 30-minute unload rule explains why unsubscribe alone cannot provide fast
 writer release. Restarting a shared process releases the writer immediately,
 but also interrupts every other thread loaded in that process.
 
-## Current Faryo failure path
+## Faryo 1.11.11 baseline failure path
 
 The current topology is:
 
@@ -196,4 +196,3 @@ The change will not:
    worker.
 9. TUI sessions, external Codex clients, Markdown/TeX, authentication and
    tmux geometry retain their existing contracts.
-

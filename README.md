@@ -46,6 +46,10 @@ in tmux as an explicit compatibility mode.
 - **Explicit session ownership:** New and Resume can select `Codex App Server`
   or `Codex TUI (tmux)`. Exactly one writer owns a thread, and an occupied thread
   is never silently taken over by the other backend.
+- **Per-session failure isolation:** each structured Web session has its own
+  supervised App Server worker and private socket. A blocked, crashed, or
+  force-recovered worker does not restart healthy Web sessions, ordinary Codex
+  CLI processes, or Codex TUI tmux sessions.
 - **Real answer streaming:** stable item identities, bounded delta batching,
   cursor replay and snapshot recovery show the answer while Codex is producing
   it, then converge in place to the durable rollout without duplicate blocks.
@@ -99,7 +103,8 @@ acceptance path is:
 
 ```text
 Ubuntu/Linux workstation
-  -> Faryo Codex App Server on a private Unix socket
+  -> read-only Faryo App Server control plane on a private Unix socket
+  -> one private App Server worker/socket per structured Web session
   -> Faryo Owner ASGI on loopback
   -> Faryo Gateway on loopback
   -> Cloudflare Tunnel + Access (or another hardened HTTPS edge)
@@ -115,8 +120,8 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line: **Faryo 1.11.11**. Latest tagged source release: **[Faryo
-1.11.11](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.11.11)**.
+Current source line: **Faryo 1.12.0**. Latest tagged source release: **[Faryo
+1.12.0](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.12.0)**.
 
 ## Current Functionality
 
@@ -132,9 +137,9 @@ Current source line: **Faryo 1.11.11**. Latest tagged source release: **[Faryo
   interrupt-and-close action that waits for the turn to settle and retains the
   Codex conversation history.
 - Prevents competing Codex writers before resume by probing the real per-thread
-  process lock without deleting it. Production compatibility reads reuse the
-  supervised App Server socket, and closing the final Web session immediately
-  releases the otherwise delayed writer.
+  process lock without deleting it. Read-only account/history/lifecycle calls use
+  a separate control plane that never resumes a Faryo Web thread. Closing one Web
+  session stops only its worker and immediately releases its writer.
 - Allocates App Server and TUI compatibility short names from one namespace;
   ambiguous backend ownership fails closed instead of opening another thread.
 - Renders App Server user, assistant and plan items as distinct keyed blocks.
@@ -152,7 +157,7 @@ Current source line: **Faryo 1.11.11**. Latest tagged source release: **[Faryo
   scroll chaining, so continued wheel or touch movement at a boundary resumes
   scrolling the surrounding conversation.
 - Treats Codex rollout JSONL as the durable final source. An Owner restart can
-  reconnect to the independent App Server service and recover both conversation
+  reconnect to the still-running per-session worker and recover both conversation
   messages and bounded tool activity without inventing a second message database.
 - Keeps Codex TUI threads in tmux as a compatibility backend; tmux capture remains
   conservative live evidence and never becomes a competing writer. If the
@@ -374,7 +379,8 @@ phone / desktop browser
   -> identity-aware HTTPS edge
   -> Faryo Gateway (127.0.0.1:8780)
   -> Faryo Owner ASGI (127.0.0.1:8765)
-       |-> private Unix WebSocket -> persistent Codex App Server
+       |-> private Unix WebSocket -> read-only App Server control plane
+       |-> private Unix WebSocket -> one App Server worker per Web thread
        `-> existing tmux pane -> Codex CLI/TUI compatibility mode
 ```
 
@@ -382,9 +388,10 @@ Gateway owns public login, route authorization, session/history navigation, and
 proxying. Owner uses Starlette/Uvicorn for authenticated HTTP, SSE and lifecycle
 handling; framework-neutral Python modules own the session actors, bounded event
 journal, App Server protocol, attachments and tmux compatibility adapter. The
-App Server is a separate user service with no TCP listener, so an Owner-only
-restart does not interrupt an active Codex App Server turn. Codex rollout history
-remains the durable conversation source.
+control plane and session workers are separate user services with no TCP
+listener. An Owner-only restart therefore does not interrupt an active turn,
+while a failed worker can be recycled without touching its peers. Codex rollout
+history remains the durable conversation source.
 
 Gateway portal CSS and JavaScript are separate versioned static assets; dynamic
 route labels enter through a nonce-protected JSON bootstrap. Focused local
@@ -418,7 +425,7 @@ initial allowed workspace:
 
 ```bash
 sha256sum --check install-faryo.sh.sha256
-bash install-faryo.sh --version v1.10.3 --workspace "$PWD"
+bash install-faryo.sh --version v1.12.0 --workspace "$PWD"
 ```
 
 Upgrading a pre-v1.5 checkout that still uses the dedicated Owner keepalive
@@ -427,9 +434,11 @@ sessions are preserved and geometry-checked.
 
 The installer verifies a versioned source archive and SHA-256 manifest, creates
 the private venv, initializes missing mode-`600` configuration, and installs
-three user services: private App Server, loopback Owner, and loopback Gateway.
+three always-on user services plus an on-demand App Server worker template.
 Only Owner and Gateway listen on TCP. Existing config, tokens, attachments,
-Codex history, and tmux sessions are preserved.
+Codex history, and tmux sessions are preserved. A v1.11.x upgrade waits until
+structured Web turns/interactions are idle before releasing the former shared
+writer and assigning an opaque worker to each registered Web session.
 
 Developers can install a clean checkout through the same application path:
 
@@ -465,10 +474,10 @@ assets use an automatic content hash, and rejected assets are `no-store`. A
 normal reload or newly opened tab is sufficient after an update; users should
 never need a browser-specific hard-refresh gesture.
 
-`faryo restart` leaves the independent App Server process running while Owner
-and Gateway restart, preserving an active Codex App Server turn. `faryo stop` stops
-all three Faryo services; it preserves tmux and Codex history but should not be
-used during an active Codex App Server turn. `faryo uninstall` removes services and
+`faryo restart` leaves the read-only control process and per-session workers
+running while Owner and Gateway restart, preserving an active Codex App Server
+turn. `faryo stop` also stops every Faryo worker; it preserves tmux and Codex
+history but should not be used during an active Codex App Server turn. `faryo uninstall` removes services and
 versioned program files but preserves `~/.faryo`; irreversible private-data
 removal requires both `--purge-data` and `--yes`.
 
@@ -485,14 +494,16 @@ layer while keeping Faryo's inner login enabled.
 
 ## Current Validation
 
-The `main` branch was revalidated on 2026-08-22 with privacy-safe fixtures:
+The `main` branch was revalidated on 2026-08-25 with privacy-safe fixtures:
 
-- canonical source gate: 225 Owner, 120 Gateway, and 65 unified-CLI Python tests,
+- canonical source gate: 274 Owner, 122 Gateway, and 84 unified-CLI Python tests,
   plus Ruff, ESLint, Prettier, TypeScript and reproducible local browser bundles;
 - isolated real Codex App Server: initialize/capability fallback, body-delta
   streaming, keyed final convergence, Markdown/KaTeX/code, body-free replay
-  journal, JSONL recovery, ordinary reload, active-turn Owner restart, a real
-  sandbox approval, and a real plan-mode `request_user_input` round trip;
+  journal, JSONL recovery, ordinary reload and active-turn Owner restart. A
+  read-only control plane plus two real per-session workers also prove one
+  thread per process, fast competing-writer failure, isolated crash recovery,
+  stable peer PID/generation and an unaffected ordinary Codex CLI new thread;
 - real authenticated Gateway at 390x844: `/model`, pending-menu reload, Cancel,
   `/usage`, Preact composer geometry and no fake chat turn;
 - stale interaction/session responses, duplicate request IDs, generation 409,
@@ -522,8 +533,10 @@ The `main` branch was revalidated on 2026-08-22 with privacy-safe fixtures:
 - pinned GitHub Actions, Python/JavaScript CodeQL, weekly grouped dependency
   proposals, and explicit Ubuntu 22.04/Python 3.10 plus Ubuntu 24.04/Python 3.13
   source lanes;
-- checksum update/rollback gates with `KillMode=process`; every deployed preview
-  preserved all pre-existing tmux session names, pane PIDs and 145x44 geometry.
+- checksum update/rollback gates with Owner `KillMode=process`; a real user-systemd
+  probe verifies worker TERM→KILL escalation, process removal and writer-lock
+  release. Every deployed preview preserved all pre-existing tmux session names,
+  pane PIDs and 145x44 geometry.
 
 Run the canonical source checks:
 

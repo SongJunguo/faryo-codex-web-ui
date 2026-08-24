@@ -32,10 +32,11 @@ faryo logs appserver
 faryo logs owner
 ```
 
-The unified installer creates and manages `faryo-appserver.service` plus direct
-`faryo-owner.service`, and preserves the Owner token, Web-session registry and
-explicit start roots. An Owner restart leaves App Server running so an active
-turn can continue and reconnect. The old
+The unified installer creates a read-only `faryo-appserver.service`, an
+on-demand `faryo-appserver-worker@.service` template and direct
+`faryo-owner.service`. It preserves the Owner token, Web-session registry and
+explicit start roots. An Owner restart leaves per-session workers running so an
+active turn can continue and reconnect. The old
 `local-tmux-owner` service tmux plus keepalive timer is a rollback-only v1.4
 compatibility path, not the maintained production supervisor.
 
@@ -62,7 +63,8 @@ keeps the hard state semantics independently testable and avoids binding
 conversation logic to a Web framework.
 
 Web-managed sessions receive stable `thread`/`turn`/`item` notifications from
-the persistent App Server service. Agent-message deltas update one keyed item;
+one official App Server worker per session. The shared control process never
+resumes a Web thread. Agent-message deltas update one keyed item;
 the final item replaces that same slot and later converges to Codex rollout
 JSONL. Empty private-reasoning placeholders are not projected as messages.
 Commands, searches and file changes remain inspectable. Each user message owns

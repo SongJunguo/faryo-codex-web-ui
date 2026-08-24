@@ -42,13 +42,12 @@ Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room �
 - Unix socket lifecycle daemon 仍是 experimental，并假定 Codex 由官方 standalone
   installer 管理。Faryo 当前不能把这个安装假设强加给所有 npm/NVM 用户。
 
-因此 Faryo 不自造 Codex Runtime Host，而是用独立的用户级服务直接监督官方
+因此 Faryo 不自造 Codex Runtime Host，而是用用户级 systemd 服务直接监督官方
 `codex app-server --listen unix://…`。Faryo CLI 每次启动服务时动态解析受支持的 Codex
-launcher，避免把某个 NVM 版本目录写死到服务文件中；Owner 只作为协议客户端连接私有
-socket。Owner 重启不会杀死活动 turn，Codex 升级也不会在活动 turn 中途替换运行时。
-Owner 的 ASGI composition root 也把只读兼容 RPC 复用到这个 socket，不再常驻第二个
-stdio App Server。最后一个 Web actor 正常关闭后，Faryo 才回收专用服务以立即释放 writer；
-只要还有其他 Web actor 或活动 turn，就不会回收共享进程。
+launcher，避免把某个 NVM 版本目录写死到服务文件中。固定 App Server 只承担只读 control
+plane；每个 Web session 由一个独立 App Server worker、socket 和 writer domain 持有。
+Owner 重启不会杀死活动 turn，单个 worker 回收也不会影响其他 Web actor。关闭一个 Web
+session 后立即停止它自己的 worker，从而释放 writer，不再依赖共享进程的“最后一个会话”条件。
 
 ## 从 YepAnywhere 吸收的设计
 

@@ -8,7 +8,8 @@ fork's source-only GitHub Release notes.
 
 The maintained fork is source-only and Codex-focused. Use the repository root
 [`README.md`](../../README.md) for current scope, deployment, and validation.
-The current maintained release is [`v1.11.11`](v1.11.11.md). It adds one
-versioned, privacy-safe error contract across Owner, Gateway and both browser
-surfaces, preserving actionable conflict and recovery semantics end to end.
-The source-only distribution and security boundary are unchanged.
+The current maintained release is [`v1.12.0`](v1.12.0.md). It replaces the
+shared App Server writer with one read-only control plane and one isolated
+worker per structured Web session, so recovery of one worker does not restart
+healthy sessions, ordinary Codex CLI processes or Codex TUI tmux sessions. The
+source-only distribution and security boundary are unchanged.

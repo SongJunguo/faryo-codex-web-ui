@@ -8,7 +8,9 @@ ports, and helper scripts are implementation details.
 
 ```text
 systemd --user
-├── faryo-appserver.service  official Codex App Server on a private Unix socket
+├── faryo-appserver.service  read-only Codex control plane on a private Unix socket
+├── faryo-appserver-worker@<opaque>.service
+│                             one official App Server per structured Web session
 ├── faryo-owner.service      Starlette/Uvicorn control API on 127.0.0.1:8765
 └── faryo-gateway.service    authenticated browser UI on 127.0.0.1:8780
 
@@ -21,14 +23,16 @@ coordinates App Server session actors, SSE, attachments and the tmux adapter.
 Gateway is the browser-facing login, navigation, and reverse-proxy layer. The
 two Web services use separate ports so the privileged local control API never
 needs to become the public entry. Both bind only to loopback by default. App
-Server exposes no TCP port; Owner reaches its mode-`700` Unix socket locally.
+Server exposes no TCP port; Owner reaches mode-`700` Unix sockets locally. The
+control process performs only account, model, history and lifecycle reads; it
+never resumes a Faryo Web thread.
 
-Restarting Owner or Gateway does not stop App Server or resize Codex tmux
-sessions. `faryo restart` deliberately keeps App Server alive, so an active
-Codex App Server turn can continue while the Web layers update. `faryo stop`
-also stops App Server and therefore should not be used during an active App
-Server turn; it still preserves rollout history, registry data and every tmux
-session.
+Restarting Owner or Gateway does not stop the control plane, session workers or
+resize Codex tmux sessions. `faryo restart` deliberately keeps workers alive, so
+an active Codex App Server turn can continue while the Web layers update.
+`faryo stop` also stops every worker and therefore should not be used during an
+active App Server turn; it still preserves rollout history, registry data and
+every tmux session.
 
 ## Requirements
 
@@ -54,10 +58,10 @@ Review and verify the script before executing it:
 ```bash
 sha256sum --check install-faryo.sh.sha256
 less install-faryo.sh
-bash install-faryo.sh --version v1.10.3 --workspace /path/to/workspace
+bash install-faryo.sh --version v1.12.0 --workspace /path/to/workspace
 ```
 
-The script then downloads `faryo-v1.10.3.tar.gz` and its checksum, accepts only a
+The script then downloads `faryo-v1.12.0.tar.gz` and its checksum, accepts only a
 bounded single-root regular-file archive, and invokes the same `faryo install`
 path used by source developers. It does not execute sudo, install apt packages,
 create a tunnel, or change Cloudflare settings.
@@ -71,7 +75,7 @@ When upgrading a pre-v1.5 deployment that still has the dedicated
 supervisor migration:
 
 ```bash
-bash install-faryo.sh --version v1.10.3 --workspace /path/to/workspace --migrate-owner
+bash install-faryo.sh --version v1.12.0 --workspace /path/to/workspace --migrate-owner
 ```
 
 The migration records and compares every existing agent tmux geometry. It stops
@@ -127,6 +131,7 @@ Do not add a fixed NVM path unless pinning is intentional.
 
 ~/.config/systemd/user/
 ├── faryo-appserver.service
+├── faryo-appserver-worker@.service
 ├── faryo-owner.service
 └── faryo-gateway.service
 
@@ -136,10 +141,19 @@ Do not add a fixed NVM path unless pinning is intentional.
 ```
 
 Each service unit pins the exact active version directory. Update and rollback
-atomically change `current`, rewrite all three units, preserve the running App
-Server where possible, restart the Web layers, and pass a health gate. This
+atomically change `current`, rewrite the fixed units and worker template,
+preserve running workers where possible, restart the Web layers, and pass a
+health gate. This
 avoids a half-written symlink or package update changing a running service
 unexpectedly.
+
+The first upgrade from the shared v1.11.x App Server topology is deliberately
+deferred while a structured Web turn or interaction is active. When idle, the
+installer stops Owner, restarts the old shared process once to release its
+writers, starts Owner on the per-session topology, and verifies health and tmux
+process identity. A failed migration restores the previous registry schema,
+unit files and services. Rolling back to v1.11.x follows the inverse idle-only
+transition and stops only exact validated Faryo worker unit names.
 
 The private venv contains the installed Faryo package, so service units do not
 export a source `PYTHONPATH`. Owner also removes service-only Faryo/Gateway
@@ -153,9 +167,9 @@ state, attachment data, delivery metadata, and other private runtime state.
 ```bash
 faryo doctor              # read-only dependency, permission, bind, and health checks
 faryo status --json       # privacy-safe machine-readable service summary
-faryo start               # start App Server plus both Web services and wait for health
-faryo stop                # stop Faryo services; preserve history and all tmux sessions
-faryo restart             # keep App Server alive; restart and check both Web services
+faryo start               # start control plane and both Web services; restore workers
+faryo stop                # stop Faryo services/workers; preserve history and all tmux sessions
+faryo restart             # keep workers alive; restart and check both Web services
 faryo open                # open the loopback Gateway without exposing Owner token
 faryo logs appserver      # bounded private-runtime journal
 faryo logs owner          # bounded user journal
@@ -169,7 +183,7 @@ tokens, session names, prompts, and conversation content.
 
 ```bash
 faryo update                    # latest stable release
-faryo update --version v1.10.3  # exact release
+faryo update --version v1.12.0  # exact release
 faryo rollback                  # previous healthy installed version
 ```
 
@@ -182,9 +196,9 @@ previous services. It never rolls back private conversation or attachment data.
 For a reviewed offline asset:
 
 ```bash
-faryo update --version v1.10.3 \
-  --archive ./faryo-v1.10.3.tar.gz \
-  --checksum ./faryo-v1.10.3.tar.gz.sha256
+faryo update --version v1.12.0 \
+  --archive ./faryo-v1.12.0.tar.gz \
+  --checksum ./faryo-v1.12.0.tar.gz.sha256
 ```
 
 ## Uninstall
