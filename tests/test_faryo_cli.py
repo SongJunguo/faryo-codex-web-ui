@@ -421,7 +421,14 @@ class FaryoCliTest(unittest.TestCase):
     def test_appserver_worker_spec_rejects_unit_name_injection(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             layout = self.layout(Path(temp))
-            with self.assertRaisesRegex(operations.OperationError, "worker id is invalid"):
+            with (
+                mock.patch.object(
+                    codex_runtime,
+                    "resolve_codex",
+                    side_effect=AssertionError("Codex discovery must follow worker validation"),
+                ),
+                self.assertRaisesRegex(operations.OperationError, "worker id is invalid"),
+            ):
                 runtime.appserver_worker_process("../faryo-owner", layout)
 
     def test_direct_runtime_rejects_non_loopback_owner(self) -> None:

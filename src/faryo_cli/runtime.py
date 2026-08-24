@@ -199,6 +199,7 @@ def appserver_process(layout: Layout | None = None) -> ProcessSpec:
 
 
 def appserver_worker_process(worker_id: str, layout: Layout | None = None) -> ProcessSpec:
+    selected_worker = appserver_workers.validate_worker_id(worker_id)
     selected = layout or Layout.from_environment()
     values = require_private_config(selected.owner_env, "Owner")
     environment_values = dict(os.environ)
@@ -211,7 +212,7 @@ def appserver_worker_process(worker_id: str, layout: Layout | None = None) -> Pr
     if not executable:
         raise OperationError("Codex CLI is unavailable")
     appserver_workers.prepare_worker_runtime(selected)
-    socket_path = appserver_workers.worker_socket_path(selected, worker_id)
+    socket_path = appserver_workers.worker_socket_path(selected, selected_worker)
     argv = codex_runtime.codex_argv(
         executable,
         "app-server",
