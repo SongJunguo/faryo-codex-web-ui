@@ -5,11 +5,14 @@
 
 ## Active
 
-- [`v1.12-appserver-session-isolation-plan.md`](v1.12-appserver-session-isolation-plan.md)：将共享
-  Codex App Server 写入进程迁移为只读 control plane 与每会话独立 worker；用进程、transport、
-  writer 和 circuit-breaker 隔离彻底限制单会话卡死的影响范围。
+当前没有正在执行的发布计划。
 
 ## Completed or maintenance mode
+
+- [`v1.12-appserver-session-isolation-plan.md`](v1.12-appserver-session-isolation-plan.md)：将共享
+  Codex App Server 写入进程迁移为只读 control plane 与每会话独立 worker；用进程、transport、
+  writer 和 circuit-breaker 隔离彻底限制单会话卡死的影响范围。source、真实 worker、浏览器、
+  systemd、部署、回滚、tmux 与 CI 验收已完成。
 
 - [`v1.11.11-error-contract-plan.md`](v1.11.11-error-contract-plan.md)：统一 Owner、Gateway 和
   浏览器错误契约，提供稳定错误码、可重试语义、恢复建议和隐私安全翻译；真实归档占用冲突、
