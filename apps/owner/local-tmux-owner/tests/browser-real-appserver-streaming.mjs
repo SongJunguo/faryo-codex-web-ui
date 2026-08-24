@@ -25,16 +25,47 @@ await withBrowser(
   },
   async ({ page }) => {
     const pageErrors = [];
+    const requestFailures = [];
+    const apiResponses = [];
     page.on("pageerror", (error) => pageErrors.push(String(error?.message || error)));
-    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(
-      () =>
-        document.documentElement.dataset.faryoAppReady === "1" &&
-        document.getElementById("output")?.dataset.captureSource ===
-          "codex-app-server",
-      null,
-      { timeout: 25_000 },
+    page.on("requestfailed", (request) =>
+      requestFailures.push({
+        resource: new URL(request.url()).pathname,
+        error: request.failure()?.errorText || "failed",
+      }),
     );
+    page.on("response", (response) => {
+      const url = new URL(response.url());
+      if (url.pathname.startsWith("/api/")) {
+        apiResponses.push({ resource: url.pathname, status: response.status() });
+      }
+    });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
+    try {
+      await page.waitForFunction(
+        () =>
+          document.documentElement.dataset.faryoAppReady === "1" &&
+          document.getElementById("output")?.dataset.captureSource ===
+            "codex-app-server",
+        null,
+        { timeout: 25_000 },
+      );
+    } catch (error) {
+      const initialState = await page.evaluate(() => ({
+        appReady: document.documentElement.dataset.faryoAppReady || "",
+        captureSource: document.getElementById("output")?.dataset.captureSource || "",
+        documentTitle: document.title,
+        bodyText: String(document.body?.innerText || "").slice(0, 240),
+        scripts: [...document.scripts]
+          .map((script) => script.src)
+          .filter(Boolean)
+          .map((source) => new URL(source).pathname),
+      }));
+      throw new Error(
+        `Real App Server page did not initialize: ${JSON.stringify({ initialState, pageErrors, requestFailures, apiResponses })}`,
+        { cause: error },
+      );
+    }
     await page.evaluate(() => {
       const output = document.getElementById("output");
       const nodeIds = new WeakMap();
@@ -168,13 +199,21 @@ await withBrowser(
       return request;
     });
     await page.waitForFunction(
-      ({ index, key }) => {
+      ({ index, key, targetId }) => {
         const active = document.querySelector(
           '#questionNavMarkers .question-nav-marker[aria-current="step"]',
         );
+        const scroller = document.getElementById("outputWrap");
+        const target = document.getElementById(targetId);
+        const scrollerRect = scroller?.getBoundingClientRect();
+        const targetRect = target?.getBoundingClientRect();
+        const offset =
+          scrollerRect && targetRect ? targetRect.top - scrollerRect.top : -1;
         return (
           active?.dataset.questionIndex === index &&
-          active?.dataset.questionKey === key
+          active?.dataset.questionKey === key &&
+          offset >= 0 &&
+          offset < Number(scroller?.clientHeight || 0)
         );
       },
       jumpRequest,

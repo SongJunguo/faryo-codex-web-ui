@@ -192,6 +192,8 @@ class AppServerRuntime:
                     + self.session_supervisor.pending_count
                 ),
                 "workerStates": worker_states,
+                "workerRpc": self.session_supervisor.rpc_diagnostics,
+                "controlRpc": dict(getattr(self.client, "rpc_diagnostics", {}) or {}),
                 "openCircuitCount": self.session_supervisor.open_circuit_count,
                 "experimentalApi": bool(getattr(self.client, "experimental_api", False)) if self.client is not None else False,
                 "lastError": self.last_error,

@@ -29,6 +29,23 @@ DEFAULT_CONNECT_TIMEOUT = 8.0
 DEFAULT_NOTIFICATION_QUEUE = 512
 
 
+def rpc_method_class(method: str) -> str:
+    """Return a body-free, stable category for protocol diagnostics."""
+
+    value = str(method or "")
+    if value.startswith("turn/"):
+        return "turn"
+    if value.startswith("item/"):
+        return "interaction"
+    if value.startswith("thread/"):
+        return "thread"
+    if value.startswith(("account/", "model/", "permissionProfile/")):
+        return "catalog"
+    if value.startswith("server/") or value == "initialize":
+        return "control"
+    return "other"
+
+
 class MessageSocket(Protocol):
     async def send(self, message: str) -> None: ...
 
@@ -98,6 +115,9 @@ class AsyncCodexAppServerClient:
             maxsize=notification_queue_size,
         )
         self._pending: dict[int, asyncio.Future[Any]] = {}
+        self._pending_classes: dict[int, str] = {}
+        self._rpc_terminal_counts: dict[str, int] = {}
+        self._last_rpc_terminal = {"class": "", "state": ""}
         self._next_request_id = 0
         self._send_lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
@@ -113,6 +133,23 @@ class AsyncCodexAppServerClient:
     @property
     def pending_count(self) -> int:
         return len(self._pending)
+
+    @property
+    def rpc_diagnostics(self) -> dict[str, Any]:
+        in_flight_classes: dict[str, int] = {}
+        for method_class in self._pending_classes.values():
+            in_flight_classes[method_class] = in_flight_classes.get(method_class, 0) + 1
+        return {
+            "inFlight": len(self._pending),
+            "inFlightClasses": dict(sorted(in_flight_classes.items())),
+            "terminalCounts": dict(sorted(self._rpc_terminal_counts.items())),
+            "lastTerminal": dict(self._last_rpc_terminal),
+        }
+
+    def _finish_rpc(self, method_class: str, state: str) -> None:
+        key = f"{method_class}.{state}"
+        self._rpc_terminal_counts[key] = self._rpc_terminal_counts.get(key, 0) + 1
+        self._last_rpc_terminal = {"class": method_class, "state": state}
 
     def register_server_request(self, method: str, handler: ServerRequestHandler) -> None:
         if not method:
@@ -227,6 +264,8 @@ class AsyncCodexAppServerClient:
             self._next_request_id += 1
             request_id = self._next_request_id
             self._pending[request_id] = future
+            method_class = rpc_method_class(method)
+            self._pending_classes[request_id] = method_class
             try:
                 await socket.send(json.dumps(
                     {"id": request_id, "method": method, "params": params},
@@ -235,18 +274,24 @@ class AsyncCodexAppServerClient:
                 ))
             except BaseException as exc:
                 self._pending.pop(request_id, None)
+                self._pending_classes.pop(request_id, None)
                 if not future.done():
                     future.cancel()
+                self._finish_rpc(method_class, "write_failed")
                 raise AppServerUnavailable("Codex App Server write failed") from exc
         try:
             return await asyncio.wait_for(asyncio.shield(future), timeout=max(0.01, timeout))
         except asyncio.CancelledError:
             self._pending.pop(request_id, None)
+            self._pending_classes.pop(request_id, None)
             future.cancel()
+            self._finish_rpc(method_class, "cancelled")
             raise
         except asyncio.TimeoutError as exc:
             self._pending.pop(request_id, None)
+            self._pending_classes.pop(request_id, None)
             future.cancel()
+            self._finish_rpc(method_class, "timed_out")
             raise AppServerUnavailable(f"Codex App Server request timed out: {method}") from exc
 
     async def _send_json(self, body: dict[str, Any]) -> None:
@@ -269,12 +314,15 @@ class AsyncCodexAppServerClient:
                 if decoded.kind in {ProtocolMessageKind.RESPONSE, ProtocolMessageKind.ERROR}:
                     request_id = body.get("id")
                     future = self._pending.pop(request_id, None)
+                    method_class = self._pending_classes.pop(request_id, "other")
                     if future is None or future.done():
                         continue
                     if decoded.kind == ProtocolMessageKind.ERROR:
                         future.set_exception(error_from_response(body))
+                        self._finish_rpc(method_class, "rejected")
                     else:
                         future.set_result(body.get("result"))
+                        self._finish_rpc(method_class, "succeeded")
                     continue
                 if decoded.kind == ProtocolMessageKind.NOTIFICATION:
                     method = str(body["method"])
@@ -364,10 +412,12 @@ class AsyncCodexAppServerClient:
         return await value if inspect.isawaitable(value) else value
 
     def _fail_pending(self, failure: BaseException) -> None:
-        for future in self._pending.values():
+        for request_id, future in self._pending.items():
             if not future.done():
                 future.set_exception(AppServerUnavailable(str(failure)))
+                self._finish_rpc(self._pending_classes.get(request_id, "other"), "disconnected")
         self._pending.clear()
+        self._pending_classes.clear()
 
     async def _close_locked(self, *, notify: bool) -> None:
         self._ready.clear()

@@ -308,6 +308,7 @@ def main() -> int:
         process: subprocess.Popen[bytes] | None = None
         worker_manager: SubprocessWorkerManager | None = None
         runtime: AppServerRuntime | None = None
+        owner_config = server.Config(server.DEFAULT_SESSION, "fixture-owner-token", 0)
         web_server: uvicorn.Server | None = None
         web_thread: threading.Thread | None = None
         try:
@@ -332,6 +333,8 @@ def main() -> int:
                     registry_path=registry_path,
                     client_version="real-test",
                     worker_manager=worker_manager,
+                    reserved_names=lambda: server.tmux_sessions(owner_config),
+                    namespace_lock=server.RUNTIME_LOCK,
                 )
                 runtime.start()
                 if not runtime.wait_ready(12):
@@ -622,7 +625,7 @@ def main() -> int:
                     port = free_port()
                     app = owner_asgi.create_app(
                         server,
-                        server.Config(server.DEFAULT_SESSION, "fixture-owner-token", 0),
+                        owner_config,
                         runtime,
                     )
                     web_server = uvicorn.Server(
@@ -693,6 +696,8 @@ def main() -> int:
                         registry_path=registry_path,
                         client_version="real-test-restarted",
                         worker_manager=worker_manager,
+                        reserved_names=lambda: server.tmux_sessions(owner_config),
+                        namespace_lock=server.RUNTIME_LOCK,
                     )
                     runtime.start()
                     if not runtime.wait_ready(12):

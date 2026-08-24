@@ -119,6 +119,7 @@ release_checks() {
     "$ROOT/apps/owner/local-tmux-owner/runtime_diagnostics.py" \
     "$ROOT/apps/owner/local-tmux-owner/tests/owner-archive-roundtrip.py" \
     "$ROOT/apps/owner/local-tmux-owner/tests/real-appserver-streaming.py" \
+    "$ROOT/tests/systemd-worker-kill-probe.py" \
     "$ROOT/apps/gateway/server/server.py" \
     "$ROOT/apps/gateway/server/gateway_security.py" \
     "$ROOT/apps/gateway/server/asgi_app.py" \

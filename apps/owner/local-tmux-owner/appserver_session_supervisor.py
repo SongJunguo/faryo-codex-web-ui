@@ -130,6 +130,26 @@ class AppServerSessionSupervisor:
         now = time.monotonic()
         return sum(1 for deadline in self.circuit_until.values() if deadline > now)
 
+    @property
+    def rpc_diagnostics(self) -> dict[str, Any]:
+        in_flight = 0
+        in_flight_classes: dict[str, int] = {}
+        terminal_counts: dict[str, int] = {}
+        for client in self.clients.values():
+            diagnostics = getattr(client, "rpc_diagnostics", {})
+            if not isinstance(diagnostics, Mapping):
+                continue
+            in_flight += int(diagnostics.get("inFlight") or 0)
+            for key, value in dict(diagnostics.get("inFlightClasses") or {}).items():
+                in_flight_classes[str(key)] = in_flight_classes.get(str(key), 0) + int(value or 0)
+            for key, value in dict(diagnostics.get("terminalCounts") or {}).items():
+                terminal_counts[str(key)] = terminal_counts.get(str(key), 0) + int(value or 0)
+        return {
+            "inFlight": in_flight,
+            "inFlightClasses": dict(sorted(in_flight_classes.items())),
+            "terminalCounts": dict(sorted(terminal_counts.items())),
+        }
+
     def client(self, name: str) -> AsyncCodexAppServerClient:
         if self.circuit_until.get(name, 0.0) > time.monotonic():
             raise AppServerUnavailable("Codex App Server worker is reconnecting after repeated failures")

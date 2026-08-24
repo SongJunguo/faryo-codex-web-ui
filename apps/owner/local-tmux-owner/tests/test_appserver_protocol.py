@@ -855,6 +855,10 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(asyncio.CancelledError):
             await task
         self.assertEqual(self.client.pending_count, 0)
+        diagnostics = self.client.rpc_diagnostics
+        self.assertEqual(diagnostics["inFlight"], 0)
+        self.assertEqual(diagnostics["terminalCounts"]["thread.cancelled"], 1)
+        self.assertNotIn("thread/read", repr(diagnostics))
 
     async def test_slow_notification_consumer_disconnects_instead_of_unbounded_buffering(self) -> None:
         socket = FakeSocket()
