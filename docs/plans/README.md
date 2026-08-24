@@ -5,7 +5,9 @@
 
 ## Active
 
-当前无活动计划。
+- [`v1.12-appserver-session-isolation-plan.md`](v1.12-appserver-session-isolation-plan.md)：将共享
+  Codex App Server 写入进程迁移为只读 control plane 与每会话独立 worker；用进程、transport、
+  writer 和 circuit-breaker 隔离彻底限制单会话卡死的影响范围。
 
 ## Completed or maintenance mode
 
