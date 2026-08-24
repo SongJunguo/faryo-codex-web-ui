@@ -36,6 +36,9 @@ class FakeRegistry:
     def by_thread(self, thread_id):
         return self.thread_records.get(thread_id)
 
+    def values(self):
+        return list(self.thread_records.values())
+
 
 class FakeRuntime:
     def __init__(self, cwd: str) -> None:
@@ -63,6 +66,18 @@ class FakeRuntime:
 
     def thread_loaded(self, thread_id):
         return thread_id in self.loaded_threads
+
+    def close_session(self, name, *, interrupt=False):
+        if name not in self.sessions:
+            raise RuntimeError("missing")
+        self.sessions.remove(name)
+        return {
+            "closed": True,
+            "session": name,
+            "threadId": "thread_demo",
+            "interrupted": interrupt,
+            "writerRelease": "delayed",
+        }
 
     def start_session(self, **_values):
         self.sessions.add("faryo1")
@@ -352,6 +367,52 @@ class OwnerAsgiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["session"], "faryo2")
         self.assertEqual(self.runtime.resumed[0]["thread_id"], "thread_switch_app")
+
+    def test_external_writer_is_rejected_before_app_server_resume(self) -> None:
+        thread = {
+            "id": "thread_external_writer",
+            "cwd": self.cwd,
+            "title": "Anonymous thread",
+            "model": "test-model",
+        }
+        with (
+            mock.patch.object(server, "codex_thread_by_id", return_value=thread),
+            mock.patch.object(server, "active_codex_thread_state", return_value=({}, set())),
+            mock.patch.object(
+                server,
+                "ensure_codex_thread_writer_available",
+                side_effect=server.OwnerError("already open in another Codex client", 409),
+            ) as writer_guard,
+        ):
+            status, _headers, body = self.request(
+                "POST",
+                "/api/agent/resume",
+                {
+                    "agent_session_id": "thread_external_writer",
+                    "source": "codex-cli",
+                    "backend": "web-managed",
+                },
+                token=True,
+            )
+
+        self.assertEqual(status, 409, body)
+        self.assertIn("another Codex client", json.loads(body)["error"])
+        writer_guard.assert_called_once_with("thread_external_writer")
+
+    def test_last_app_server_close_recycles_writer_service(self) -> None:
+        self.runtime.sessions.add("faryo1")
+        with mock.patch.object(server, "recycle_codex_app_server_service", return_value=True) as recycle:
+            status, _headers, body = self.request(
+                "POST",
+                "/api/session/close",
+                {"session": "faryo1"},
+                token=True,
+            )
+
+        payload = json.loads(body)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(payload["writerRelease"], "immediate")
+        recycle.assert_called_once_with("thread_demo")
 
     def test_active_app_server_history_keeps_app_server_question_identity(self) -> None:
         self.runtime.sessions.add("faryo1")

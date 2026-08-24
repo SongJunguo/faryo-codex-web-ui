@@ -1,6 +1,6 @@
 # Codex App Server 流式架构参考审计
 
-状态：2026-08-22 已完成首轮审计，实施期间持续校验。
+状态：2026-08-25 已按 Codex 0.149.1 精确版本复核生命周期与 writer 锁。
 
 本文只记录公开仓库、公开提交和可公开的技术结论，不记录部署域名、账号、Token、
 Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room 架构借鉴，不复制其代码。
@@ -12,7 +12,7 @@ Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room �
 | [YepAnywhere](https://github.com/kzahel/yepanywhere) | `b1091fb05d021c7044af5b41fe15f2d754ea659e` | Codex delta 聚合、稳定消息身份、local-command system row、typed tool fallback 和长历史 | README 标注 MIT，但该快照根目录没有标准许可证文件；只借鉴公开架构思想，不复制代码 |
 | [HAPI](https://github.com/tiann/hapi) | `be1ef2a2e4d6d8836ca28695d86ccff47d0c03a3` | 双向 App Server RPC、typed tool begin/end、工具分组/详情和 Web 交互边界 | AGPL-3.0-only；只做行为和协议研究，不复制实现 |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` | command run/done 独立生命周期、session title event 和 log-only command 边界 | 只借鉴公开事件模型；不复制实现或视觉资产 |
-| [OpenAI Codex](https://github.com/openai/codex) | `ad9e8097fd3d0d2f1c1166575d2c6cd8cb9e1833` | App Server 官方协议、Unix socket、多连接、线程生命周期 | 上游官方源码与本机版本生成 schema 是协议依据 |
+| [OpenAI Codex](https://github.com/openai/codex) | `ff29a44391deccde0aba0f8390337d7f3c319ea4` (`rust-v0.149.1`) | App Server 官方协议、Unix socket、多连接、线程生命周期 | 上游官方源码与本机版本生成 schema 是协议依据 |
 
 两个第三方仓库均以完整工作树的浅克隆保存于仓库外的参考区，未加入 Faryo Git 历史、
 构建上下文或发布包。固定提交用于让审计结论可复核，后续上游变化不会静默改变本计划。
@@ -37,6 +37,8 @@ Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room �
 - 重连可以用 `thread/resume`、`thread/read`、`thread/turns/list` 和 `thread/items/list`
   恢复权威状态，但 App Server 不承诺为新连接重放断线期间的每个正文 delta。
 - 同一个持久 thread 只能由一个 App Server 进程持有写锁；另一个进程 resume 会失败。
+- writer 锁由活进程通过 `flock` 持有，不能通过删除锁文件来安全交接；Faryo 只做非阻塞
+  预检，锁仍由 Codex 自己获取和释放。
 - Unix socket lifecycle daemon 仍是 experimental，并假定 Codex 由官方 standalone
   installer 管理。Faryo 当前不能把这个安装假设强加给所有 npm/NVM 用户。
 
@@ -44,6 +46,9 @@ Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room �
 `codex app-server --listen unix://…`。Faryo CLI 每次启动服务时动态解析受支持的 Codex
 launcher，避免把某个 NVM 版本目录写死到服务文件中；Owner 只作为协议客户端连接私有
 socket。Owner 重启不会杀死活动 turn，Codex 升级也不会在活动 turn 中途替换运行时。
+Owner 的 ASGI composition root 也把只读兼容 RPC 复用到这个 socket，不再常驻第二个
+stdio App Server。最后一个 Web actor 正常关闭后，Faryo 才回收专用服务以立即释放 writer；
+只要还有其他 Web actor 或活动 turn，就不会回收共享进程。
 
 ## 从 YepAnywhere 吸收的设计
 

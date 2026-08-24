@@ -88,13 +88,16 @@ Owner, then sets only that process's Codex context and 90% auto-compaction
 threshold; it never rewrites the user's global Codex config. Directory
 navigation keeps the in-progress context choice.
 
-Backend selection happens before resume. If either an App Server actor or a TUI
-writer already owns the thread, Owner rejects a competing independent writer
-atomically; Faryo never starts one and then attempts cleanup. Codex 0.149 keeps
-an unsubscribed App Server thread loaded for up to 30 minutes. During that
-window, a requested TUI resume connects through the official local `--remote`
-Unix endpoint and reuses the resident writer. This is one writer with another
-UI client, not an unsafe ownership bypass. Protocol/storage compatibility values
+Backend selection happens before resume. If either an App Server actor, a TUI,
+VS Code or another Codex process already owns the thread, Owner rejects a
+competing independent writer before bootstrap. The advisory preflight probes
+Codex's process-held lock and never deletes it; Codex's own resume remains the
+final authority for races. Codex 0.149 keeps an unsubscribed App Server thread
+loaded for up to 30 minutes. While another Web session keeps the shared process
+alive, a requested TUI resume connects through the official local `--remote`
+Unix endpoint and reuses the resident writer. Closing the final Web session
+recycles only the dedicated App Server service after all work has settled, so
+the last writer is released immediately. Protocol/storage compatibility values
 are mapped at one boundary and are not shown to users.
 
 Close distinguishes idle and busy App Server sessions. Busy Close requires an

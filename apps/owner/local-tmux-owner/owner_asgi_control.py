@@ -211,9 +211,22 @@ class OwnerControlRoutes:
         session = str(payload.get("session") or "")
         if self.support.is_app_server_session(session):
             interrupt = payload.get("interrupt") is True
+
+            def close_app_server_session() -> dict[str, Any]:
+                # The cross-backend namespace lock keeps a concurrent New or
+                # Resume from racing the last-session service recycle.
+                with self.core.RUNTIME_LOCK:
+                    result = self.support.runtime.close_session(session, interrupt=interrupt)
+                    if not self.support.runtime.session_records():
+                        released = self.core.recycle_codex_app_server_service(
+                            str(result.get("threadId") or "")
+                        )
+                        result["writerRelease"] = "immediate" if released else "delayed"
+                    return result
+
             try:
                 result = await to_thread.run_sync(
-                    lambda: self.support.runtime.close_session(session, interrupt=interrupt),
+                    close_app_server_session,
                     abandon_on_cancel=True,
                 )
             except appserver_runtime.AppServerRuntimeError as exc:
@@ -278,6 +291,8 @@ class OwnerControlRoutes:
                     remote_app_server = self.support.runtime.thread_loaded(agent_session_id)
                 except appserver_runtime.AppServerRuntimeError:
                     remote_app_server = False
+                if not remote_app_server:
+                    core.ensure_codex_thread_writer_available(agent_session_id)
                 return core.resume_agent_session(
                     self.support.config,
                     agent_session_id,
@@ -328,6 +343,12 @@ class OwnerControlRoutes:
                         "this Codex thread is already owned by Codex TUI (tmux)",
                         HTTPStatus.CONFLICT,
                     )
+                try:
+                    resident_app_server = self.support.runtime.thread_loaded(thread_id)
+                except appserver_runtime.AppServerRuntimeError:
+                    resident_app_server = False
+                if not resident_app_server:
+                    core.ensure_codex_thread_writer_available(thread_id)
                 recorded_cwd = str(thread.get("cwd") or "")
                 resume_cwd = str(selected_cwd or recorded_cwd)
                 if not resume_cwd or not Path(resume_cwd).is_dir():

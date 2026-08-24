@@ -10,6 +10,7 @@ Type=simple
 WorkingDirectory=@FARYO_ROOT_PATH@
 Environment="FARYO_HOME=@FARYO_HOME@"
 Environment="FARYO_INSTALL_ROOT=@FARYO_ROOT@"
+Environment="FARYO_CODEX_APP_SERVER_UNIT=faryo-appserver.service"
 ExecStart="@FARYO_PYTHON@" -m faryo_cli internal run-owner
 Restart=on-failure
 RestartSec=3

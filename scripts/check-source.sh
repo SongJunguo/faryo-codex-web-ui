@@ -94,6 +94,7 @@ release_checks() {
     "$ROOT/apps/owner/local-tmux-owner/owner_http.py" \
     "$ROOT/apps/owner/local-tmux-owner/codex_history.py" \
     "$ROOT/apps/owner/local-tmux-owner/codex_app_server.py" \
+    "$ROOT/apps/owner/local-tmux-owner/codex_writer_guard.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_capabilities.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_commands.py" \
     "$ROOT/apps/owner/local-tmux-owner/command_timeline.py" \

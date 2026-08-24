@@ -44,6 +44,11 @@ SEND_RECEIPT_TTL_SECONDS = 48 * 60 * 60
 SEND_ACK_WAIT_SECONDS = 0.35
 DELTA_PUBLISH_INTERVAL_SECONDS = 0.04
 TURN_INTERRUPT_SETTLE_SECONDS = 1.0
+COMPAT_RPC_METHODS = {
+    "account/rateLimits/read",
+    "thread/goal/get",
+    "thread/read",
+}
 
 
 class AppServerRuntimeError(RuntimeError):
@@ -164,6 +169,25 @@ class AppServerRuntime:
     def thread_loaded(self, thread_id: str, timeout: float = RUNTIME_CALL_TIMEOUT) -> bool:
         return self._submit(self._thread_loaded(thread_id), timeout)
 
+    def compat_rpc(
+        self,
+        method: str,
+        params: dict[str, Any],
+        timeout: float = RUNTIME_CALL_TIMEOUT,
+    ) -> dict[str, Any]:
+        """Serve bounded read compatibility calls over the resident socket.
+
+        Owner historically spawned a second stdio App Server for these calls.
+        Reusing the supervised socket process avoids another model-refresh
+        worker and keeps every App Server read behind one connection manager.
+        """
+
+        try:
+            result = self._submit(self._compat_rpc(method, params), timeout)
+        except AppServerRuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "result": result}
+
     def session_records(self) -> list[dict[str, Any]]:
         return [record.public() for record in sorted(self.registry.values(), key=lambda item: item.updated_at, reverse=True)]
 
@@ -217,7 +241,8 @@ class AppServerRuntime:
         interrupt: bool = False,
         timeout: float = RUNTIME_CALL_TIMEOUT,
     ) -> dict[str, Any]:
-        return self._submit(self._close_session(name, interrupt=interrupt), timeout)
+        with self.namespace_lock:
+            return self._submit(self._close_session(name, interrupt=interrupt), timeout)
 
     def respond_interaction(
         self,
@@ -791,6 +816,14 @@ class AppServerRuntime:
             raise AppServerRuntimeError("invalid Codex thread id")
         result = await self._require_client().rpc(method, {"threadId": clean_thread_id})
         return {"ok": True, "result": result if isinstance(result, Mapping) else {}}
+
+    async def _compat_rpc(self, method: str, params: dict[str, Any]) -> Any:
+        selected_method = str(method or "").strip()
+        if selected_method not in COMPAT_RPC_METHODS:
+            raise AppServerRuntimeError("unsupported App Server compatibility request")
+        if not isinstance(params, dict):
+            raise AppServerRuntimeError("invalid App Server compatibility request")
+        return await self._require_client().rpc(selected_method, params)
 
     async def _thread_loaded(self, thread_id: str) -> bool:
         clean_thread_id = str(thread_id or "").strip()

@@ -33,10 +33,15 @@ def create_app(core: Any, config: Any, runtime: Any | None = None) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app: Starlette):
         web_runtime.start()
+        compat_rpc = getattr(web_runtime, "compat_rpc", None)
+        if callable(compat_rpc):
+            core.configure_codex_app_server_rpc(compat_rpc)
         try:
             yield
         finally:
             streams.close_active_streams()
+            if callable(compat_rpc):
+                core.configure_codex_app_server_rpc(None)
             web_runtime.stop()
             core.stop_codex_app_server()
 

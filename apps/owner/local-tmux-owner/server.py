@@ -39,6 +39,7 @@ import delivery_store
 import delivery_service
 import codex_history
 import codex_app_server
+import codex_writer_guard
 import appserver_runtime
 import appserver_history
 import appserver_rollout
@@ -168,6 +169,9 @@ APP_SERVER_REGISTRY = Path(
         str(FARYO_OWNER_DATA.parent / "state/appserver-sessions.json"),
     )
 ).expanduser()
+APP_SERVER_SERVICE_UNIT = os.environ.get("FARYO_CODEX_APP_SERVER_UNIT", "").strip()
+APP_SERVER_RECYCLE_TIMEOUT = 20.0
+APP_SERVER_WRITER_RELEASE_TIMEOUT = 5.0
 COMMAND_TIMELINE_PATH = Path(
     os.environ.get(
         "FARYO_COMMAND_TIMELINE",
@@ -643,6 +647,8 @@ def change_codex_thread_archive_state(
 
 _codex_app_server_launch_version = ""
 _codex_installation_reconcile_lock = threading.Lock()
+_codex_app_server_rpc_provider_lock = threading.Lock()
+_codex_app_server_rpc_provider: Callable[[str, dict[str, Any], float], dict[str, Any]] | None = None
 
 
 def codex_app_server_argv(*args: str) -> list[str]:
@@ -1118,6 +1124,20 @@ def stop_codex_app_server() -> None:
     _codex_app_server_client.stop()
 
 
+def configure_codex_app_server_rpc(
+    provider: Callable[[str, dict[str, Any], float], dict[str, Any]] | None,
+) -> None:
+    """Route compatibility reads through Owner's supervised socket runtime."""
+
+    global _codex_app_server_rpc_provider
+    with _codex_app_server_rpc_provider_lock:
+        _codex_app_server_rpc_provider = provider
+    if provider is not None:
+        # A helper left behind by a prior request is redundant once the socket
+        # runtime is ready. Stopping it never touches the supervised service.
+        stop_codex_app_server()
+
+
 def reconcile_codex_installation() -> bool:
     """Restart version-bound helpers after the preflight replaced Codex."""
     global _codex_app_server_launch_version
@@ -1144,7 +1164,49 @@ def _start_codex_app_server_locked(timeout: float) -> subprocess.Popen[str] | No
 
 
 def codex_app_server_rpc(method: str, params: dict[str, Any], timeout: float = 2.5) -> dict[str, Any]:
+    with _codex_app_server_rpc_provider_lock:
+        provider = _codex_app_server_rpc_provider
+    if provider is not None:
+        try:
+            return provider(method, params, timeout)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc) or "Codex App Server is unavailable"}
     return _codex_app_server_client.rpc(method, params, timeout)
+
+
+def ensure_codex_thread_writer_available(thread_id: str) -> str:
+    """Fail before bootstrap when another independent Codex owns the thread."""
+
+    probe = codex_writer_guard.probe_thread_writer(thread_id)
+    if probe.held:
+        raise OwnerError(
+            "this Codex thread is already open in another Codex client; close it there and retry",
+            HTTPStatus.CONFLICT,
+        )
+    return probe.state
+
+
+def recycle_codex_app_server_service(thread_id: str) -> bool:
+    """Release the final closed Web writer by restarting its dedicated service."""
+
+    unit = APP_SERVER_SERVICE_UNIT
+    if not re.fullmatch(r"[A-Za-z0-9_.@:-]+\.service", unit):
+        return False
+    try:
+        result = run_cmd(
+            ["systemctl", "--user", "restart", unit],
+            timeout=APP_SERVER_RECYCLE_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if result.returncode != 0:
+        return False
+    deadline = time.monotonic() + APP_SERVER_WRITER_RELEASE_TIMEOUT
+    while time.monotonic() < deadline:
+        if codex_writer_guard.probe_thread_writer(thread_id).available:
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def codex_app_server_request(method: str, params: dict[str, Any], timeout: float = 2.5) -> dict[str, Any] | None:

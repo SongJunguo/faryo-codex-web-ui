@@ -140,9 +140,10 @@ but the default upload destination should come from the Faryo data directory.
 - `owner_http.py` owns browser security headers, query-redacted log paths,
   Owner-token validation, bounded JSON/multipart parsing, gzip JSON and file
   byte responses. The Handler delegates these primitives and keeps routing.
-- `codex_app_server.py` owns the serialized stdio process, initialize handshake,
-  request IDs, retry/reap lifecycle and JSON-RPC result/error mapping. Higher
-  history/archive/rate-limit services call thin Owner wrappers.
+- `appserver_runtime.py` owns the production Unix-socket client and the bounded
+  compatibility RPC allowlist used by history, goal and rate-limit reads.
+  `codex_app_server.py` retains the serialized stdio fallback only for
+  standalone callers outside the ASGI composition root.
 - `appserver_session.py` projects official tool item types and states into a
   bounded browser activity envelope. Full command output, tool results and file
   diffs stay out of capture/history/SSE and are projected only by the

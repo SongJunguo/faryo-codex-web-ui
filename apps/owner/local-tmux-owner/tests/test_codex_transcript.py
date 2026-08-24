@@ -779,6 +779,23 @@ Keep the formula \\(x^2+y^2\\) in the same message."""
         self.assertEqual(result["usedPercent"], 42.0)
         self.assertEqual(result["windowDurationMins"], 10_080)
 
+    def test_compatibility_rpc_provider_avoids_a_second_stdio_server(self):
+        provider = mock.Mock(return_value={"ok": True, "result": {"value": 1}})
+        with (
+            mock.patch.object(server, "stop_codex_app_server") as stop,
+            mock.patch.object(server._codex_app_server_client, "rpc") as legacy,
+        ):
+            server.configure_codex_app_server_rpc(provider)
+            try:
+                response = server.codex_app_server_rpc("thread/read", {"threadId": "thread-demo"}, 4.0)
+            finally:
+                server.configure_codex_app_server_rpc(None)
+
+        self.assertEqual(response["result"]["value"], 1)
+        provider.assert_called_once_with("thread/read", {"threadId": "thread-demo"}, 4.0)
+        legacy.assert_not_called()
+        stop.assert_called_once_with()
+
     def test_goal_details_use_formal_app_server_rpc_only_on_demand(self):
         config = server.Config("faryo1", "fixture-token", 0)
         result = {

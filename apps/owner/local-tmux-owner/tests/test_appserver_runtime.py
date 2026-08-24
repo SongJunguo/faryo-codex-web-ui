@@ -232,6 +232,37 @@ class RuntimeTest(unittest.TestCase):
             time.sleep(0.01)
         raise AssertionError("interaction did not become pending")
 
+    def test_compatibility_reads_reuse_the_resident_client(self) -> None:
+        clients = []
+
+        def factory(notification, disconnected):
+            client = FakeRuntimeClient(notification, disconnected)
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = AppServerRuntime(
+                socket_path=root / "app.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            response = runtime.compat_rpc("account/rateLimits/read", {}, timeout=2)
+            rejected = runtime.compat_rpc("thread/resume", {"threadId": "thread_demo"}, timeout=2)
+            runtime.stop()
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["rateLimits"]["secondary"]["usedPercent"], 40)
+        self.assertFalse(rejected["ok"])
+        self.assertIn("unsupported", rejected["error"])
+        self.assertEqual(
+            [call[0] for call in clients[0].rpc_calls].count("account/rateLimits/read"),
+            2,
+        )
+
     def test_runtime_streams_and_converges_without_a_second_body_store(self) -> None:
         clients = []
 

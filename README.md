@@ -115,8 +115,8 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line: **Faryo 1.11.9**. Latest tagged source release: **[Faryo
-1.11.9](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.11.9)**.
+Current source line: **Faryo 1.11.10**. Latest tagged source release: **[Faryo
+1.11.10](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.11.10)**.
 
 ## Current Functionality
 
@@ -131,6 +131,10 @@ Current source line: **Faryo 1.11.9**. Latest tagged source release: **[Faryo
   path instead of attempting a second turn. Busy Close is an explicit
   interrupt-and-close action that waits for the turn to settle and retains the
   Codex conversation history.
+- Prevents competing Codex writers before resume by probing the real per-thread
+  process lock without deleting it. Production compatibility reads reuse the
+  supervised App Server socket, and closing the final Web session immediately
+  releases the otherwise delayed writer.
 - Allocates App Server and TUI compatibility short names from one namespace;
   ambiguous backend ownership fails closed instead of opening another thread.
 - Renders App Server user, assistant and plan items as distinct keyed blocks.

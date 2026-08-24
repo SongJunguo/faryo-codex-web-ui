@@ -354,9 +354,10 @@ consumed as private runtime input and is never printed.
 - `owner_http.py` owns CSP/security headers, private-query log stripping,
   header/query token authentication, bounded JSON/multipart bodies, gzip JSON
   and file responses. Handler methods are thin route-facing delegates.
-- `codex_app_server.py` owns one locked Codex App Server stdio process,
-  initialize/initialized handshake, monotonically increasing request IDs,
-  two-attempt recovery and bounded process shutdown.
+- `appserver_runtime.py` owns the production Owner's single supervised Unix
+  socket channel, including bounded compatibility reads that previously used a
+  second stdio process. `codex_app_server.py` remains only as a standalone
+  compatibility fallback outside the ASGI composition root.
 - `tmux_runtime.py` owns UTF-8 subprocess defaults, fixed tmux invocation,
   process-tree parsing and bounded session/thread/message identifiers; product
   policy remains in the higher Owner services.
