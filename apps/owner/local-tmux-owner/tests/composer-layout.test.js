@@ -5,6 +5,10 @@ const composerLayout = require('../static/composer-layout.js');
 
 assert.equal(composerLayout.measuredHeight(null), 0);
 assert.equal(composerLayout.measuredHeight({ getBoundingClientRect: () => ({ height: 81.2 }) }), 82);
+assert.equal(composerLayout.measuredHeight({
+  getBoundingClientRect: () => ({ top: 100, bottom: 196, height: 96 }),
+  querySelectorAll: () => [{ getBoundingClientRect: () => ({ top: 76, bottom: 88, height: 12 }) }],
+}), 120);
 
 function fakeView() {
   const properties = new Map();

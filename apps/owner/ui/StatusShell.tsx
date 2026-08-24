@@ -89,7 +89,11 @@ function StatusShell({
   useLayoutEffect(() => store.subscribe(setView), [store]);
   const quotaStyle = `--quota-pct:${view.quotaPercent};--quota-week-pct:${view.quotaWeekPercent}`;
   return (
-    <div class="meta-row">
+    <div
+      class="meta-row"
+      tabIndex={0}
+      aria-label="Session status; scroll horizontally for more"
+    >
       <div id="subTitle" class="subtitle meta-main" title={view.subtitleTitle}>
         <span id="ctxText" title={view.contextTitle}>
           {view.contextText}

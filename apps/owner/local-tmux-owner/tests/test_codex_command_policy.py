@@ -15,7 +15,7 @@ import codex_command_policy as policy
 class CodexCommandPolicyTest(unittest.TestCase):
     def test_fallback_is_a_versioned_snapshot_not_a_protocol_constant(self):
         catalog = policy.load_catalog(runtime_path=None)
-        self.assertEqual("0.149.0", catalog.tested_codex_version)
+        self.assertEqual("0.149.1", catalog.tested_codex_version)
         self.assertEqual("fallback", catalog.source)
         self.assertFalse(catalog.drifted)
         self.assertGreater(len(catalog.entries), 40)
@@ -30,7 +30,7 @@ class CodexCommandPolicyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             runtime = Path(temp) / "catalog.json"
             runtime.write_text(
-                json.dumps({"schemaVersion": 1, "observedCodexVersion": "0.149.0", "commands": ["/model", "/future-command"]}),
+                json.dumps({"schemaVersion": 1, "observedCodexVersion": "0.149.1", "commands": ["/model", "/future-command"]}),
                 encoding="utf-8",
             )
             catalog = policy.load_catalog(runtime_path=runtime)

@@ -6,17 +6,17 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
-import re
 import tempfile
 import threading
 import time
 from typing import Any, Iterable
 
 from faryo_cli import session_backend
+import session_namespace
 
 
 REGISTRY_SCHEMA_VERSION = 1
-SESSION_NAME_RE = re.compile(r"^faryo(?P<number>[1-9][0-9]*)$")
+SESSION_NAME_RE = session_namespace.SESSION_NAME_RE
 
 
 @dataclass
@@ -126,11 +126,7 @@ class WebSessionRegistry:
 
     def next_name(self, reserved: Iterable[str] = ()) -> str:
         with self.lock:
-            used = set(self.records) | {str(value) for value in reserved}
-            number = 1
-            while f"faryo{number}" in used:
-                number += 1
-            return f"faryo{number}"
+            return session_namespace.next_name(self.records, reserved)
 
     def reassign_conflicts(self, reserved: Iterable[str] = ()) -> dict[str, str]:
         """Move persisted Web sessions away from names owned by another backend."""
@@ -146,10 +142,7 @@ class WebSessionRegistry:
             renamed: dict[str, str] = {}
             for record in conflicts:
                 old_name = record.name
-                number = 1
-                while f"faryo{number}" in used:
-                    number += 1
-                new_name = f"faryo{number}"
+                new_name = session_namespace.next_name(used)
                 del self.records[old_name]
                 record.name = new_name
                 self.records[new_name] = record

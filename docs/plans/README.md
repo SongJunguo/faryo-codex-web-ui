@@ -5,7 +5,10 @@
 
 ## Active
 
-当前没有实施中的版本计划。维护项从下方最近完成的计划继续跟踪；新工作应先建立独立计划。
+- [`v1.11.8-mobile-history-status-reliability-plan.md`](v1.11.8-mobile-history-status-reliability-plan.md)：
+  修复 TUI JSONL 历史被终端启发式二次切分、问题导航/复制边界漂移、底部状态覆盖末条消息，
+  并为窄屏连续状态信息建立可触摸横向浏览、真实 footer footprint、多行 composer 纵向操作组，
+  以及 TUI/App Server 单一短名命名域和冲突失败关闭验收。
 
 ## Completed or maintenance mode
 

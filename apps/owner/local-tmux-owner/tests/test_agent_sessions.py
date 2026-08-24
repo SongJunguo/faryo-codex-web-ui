@@ -655,6 +655,28 @@ class AgentSessionTest(unittest.TestCase):
         self.assertEqual(["resume", "-C", str(selected), "thread-a"], args[3])
         self.assertEqual(start.call_args.kwargs["context_window_k"], 1000)
 
+    def test_tui_resume_propagates_app_server_name_reservations(self):
+        with tempfile.TemporaryDirectory() as root:
+            selected = Path(root)
+            reserved = lambda: ["faryo2", "faryo4"]
+            with (
+                mock.patch.object(server, "active_codex_thread_map", return_value={}),
+                mock.patch.object(
+                    server,
+                    "codex_thread_by_id",
+                    return_value={"id": "thread-a", "cwd": str(selected)},
+                ),
+                mock.patch.object(server, "start_agent_runtime", return_value="faryo5") as start,
+            ):
+                session = server.resume_codex_thread_session(
+                    self.config,
+                    "thread-a",
+                    reserved_names=reserved,
+                )
+
+        self.assertEqual(session, "faryo5")
+        self.assertIs(start.call_args.kwargs["reserved_names"], reserved)
+
     def test_tui_resume_reuses_the_resident_app_server_writer(self):
         with tempfile.TemporaryDirectory() as root:
             selected = Path(root)

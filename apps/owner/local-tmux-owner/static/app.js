@@ -411,9 +411,23 @@
     if (!promptInput.value) {
       promptInput.style.height = '';
       promptInput.style.overflowY = 'hidden';
+      promptShell?.classList.remove('composer-multiline');
       return;
     }
     promptInput.style.height = 'auto';
+    const promptStyle = getComputedStyle(promptInput);
+    const lineHeight = Number.parseFloat(promptStyle.lineHeight) || 20;
+    const verticalPadding = (Number.parseFloat(promptStyle.paddingTop) || 0)
+      + (Number.parseFloat(promptStyle.paddingBottom) || 0);
+    const minimumHeight = Number.parseFloat(promptStyle.minHeight) || 0;
+    const oneLineHeight = Math.max(minimumHeight, lineHeight + verticalPadding);
+    const visualLines = 1 + Math.ceil(
+      Math.max(0, promptInput.scrollHeight - oneLineHeight - 0.5) / lineHeight,
+    );
+    const alreadyMultiline = Boolean(promptShell?.classList.contains('composer-multiline'));
+    const useVerticalActions = visualLines >= (alreadyMultiline ? 2 : 3);
+    promptShell?.classList.toggle('composer-multiline', useVerticalActions);
+    if (useVerticalActions !== alreadyMultiline) promptInput.style.height = 'auto';
     promptInput.style.overflowY = promptInput.scrollHeight > 136 ? 'auto' : 'hidden';
     promptInput.style.height = Math.min(promptInput.scrollHeight, 136) + 'px';
   }

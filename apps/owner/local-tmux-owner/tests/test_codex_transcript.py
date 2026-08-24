@@ -465,10 +465,52 @@ class CodexTranscriptTest(unittest.TestCase):
         self.assertEqual(len({item["key"] for item in latest["questions"]}), 40)
         self.assertEqual([item["index"] for item in latest["turns"]], list(range(28, 40)))
         self.assertIn("\\[x_{39}=u\\]", latest["turns"][-1]["text"])
+        self.assertEqual([block["kind"] for block in latest["turns"][-1]["blocks"]], ["user", "output"])
+        self.assertEqual(latest["turns"][-1]["blocks"][0]["questionKey"], latest["turns"][-1]["key"])
         self.assertEqual((previous["start"], previous["end"]), (16, 28))
         self.assertEqual((around["start"], around["end"]), (0, 12))
         self.assertEqual(around["questions"][0]["preview"], "question 0")
         self.assertNotIn(str(history), json.dumps(latest))
+
+    def test_full_history_preserves_literal_tui_prompts_inside_one_user_block(self):
+        quoted_tui = """Investigate this transcript:
+› >_ OpenAI Codex (v0.000.0)
+› Ask Codex to do anything
+› ? for shortcuts
+› Do you trust the contents of this directory?
+› Press enter to continue
+
+Keep the formula \\(x^2+y^2\\) in the same message."""
+        events = [
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": quoted_tui}],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "One structured answer."}],
+                },
+            },
+        ]
+        with tempfile.TemporaryDirectory() as root:
+            history = Path(root) / "rollout.jsonl"
+            history.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+            page = server.codex_conversation_history_page(str(history), limit=12)
+
+        self.assertEqual(page["totalTurns"], 1)
+        self.assertEqual(len(page["turns"]), 1)
+        blocks = page["turns"][0]["blocks"]
+        self.assertEqual([block["kind"] for block in blocks], ["user", "output"])
+        self.assertEqual(blocks[0]["text"], quoted_tui)
+        self.assertEqual(blocks[0]["questionKey"], page["questions"][0]["key"])
+        self.assertEqual(len({block["id"] for block in blocks}), 2)
 
     def test_full_history_index_waits_for_complete_records_and_expires_old_cursor(self):
         def message(role, text):

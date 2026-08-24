@@ -23,24 +23,26 @@ export function Composer({
         rows={1}
         onKeyDown={onKeyDown}
       />
-      <button
-        id="dockPlusBtn"
-        class={`dock-plus${plusVisible ? "" : " hidden"}`}
-        type="button"
-        aria-label="Open input tools"
-        aria-expanded="false"
-        aria-controls="dockMenu"
-      >
-        +
-      </button>
-      <button
-        id="sendBtn"
-        class={`dock-send${sendVisible ? "" : " hidden"}`}
-        type="button"
-        aria-label="Send"
-      >
-        ↑
-      </button>
+      <div class="composer-actions" aria-label="Input actions">
+        <button
+          id="dockPlusBtn"
+          class={`dock-plus${plusVisible ? "" : " hidden"}`}
+          type="button"
+          aria-label="Open input tools"
+          aria-expanded="false"
+          aria-controls="dockMenu"
+        >
+          +
+        </button>
+        <button
+          id="sendBtn"
+          class={`dock-send${sendVisible ? "" : " hidden"}`}
+          type="button"
+          aria-label="Send"
+        >
+          ↑
+        </button>
+      </div>
     </div>
   );
 }

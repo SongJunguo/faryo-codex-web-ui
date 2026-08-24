@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "faryo"
-version = "1.11.7"
+version = "1.11.8"
 description = "Self-hosted Codex Web UI with App Server streaming and tmux compatibility"
 readme = "README.md"
 requires-python = ">=3.10"

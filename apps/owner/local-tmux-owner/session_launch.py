@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import codex_command_policy
+import session_namespace
 
 
 class SessionLaunchService:
@@ -187,15 +188,7 @@ class SessionLaunchService:
     def next_faryo_session_name(self, config: Any, reserved_names: Any = ()) -> str:
         r = self.runtime
         reserved = reserved_names() if callable(reserved_names) else reserved_names
-        used = {
-            int(match.group(1))
-            for name in [*r.tmux_sessions(config), *(reserved or ())]
-            if (match := r.FARYO_MANAGED_SESSION_RE.fullmatch(name))
-        }
-        index = 1
-        while index in used:
-            index += 1
-        return f"faryo{index}"
+        return session_namespace.next_name(r.tmux_sessions(config), reserved or ())
 
     def managed_launch_session(self, config: Any, launch_id: str) -> str:
         r = self.runtime
@@ -430,6 +423,7 @@ class SessionLaunchService:
         async_ready: bool = False,
         context_window_k: int = 0,
         remote_app_server: bool = False,
+        reserved_names: Any = (),
     ) -> str:
         r = self.runtime
         clean_id = r.clean_agent_session_id(thread_id)
@@ -459,6 +453,7 @@ class SessionLaunchService:
                 max_running,
                 agent_id=clean_id,
                 context_window_k=context_window_k,
+                reserved_names=reserved_names,
             )
             if remote_app_server:
                 r.tmux_session_option(config, session, "@faryo_codex_remote", "1")
@@ -475,6 +470,7 @@ class SessionLaunchService:
         async_ready: bool = False,
         context_window_k: int = 0,
         remote_app_server: bool = False,
+        reserved_names: Any = (),
     ) -> str:
         r = self.runtime
         if source == "codex-cli":
@@ -487,6 +483,7 @@ class SessionLaunchService:
                 async_ready,
                 context_window_k,
                 remote_app_server,
+                reserved_names,
             )
         raise r.OwnerError("unsupported agent source", HTTPStatus.BAD_REQUEST)
 

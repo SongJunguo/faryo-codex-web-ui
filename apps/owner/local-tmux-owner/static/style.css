@@ -226,6 +226,7 @@ footer.status-collapsed.auto-expanded { padding-top: 8px; }
 }
 textarea { flex: 1 1 auto; min-width: 0; width: 100%; min-height: 32px; max-height: 136px; resize: none; border: 0; outline: none; overflow-x: hidden; overflow-y: hidden; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; background: transparent; color: var(--text); font-size: calc(15px + var(--font-step)); line-height: calc(20px + var(--font-step)); font-family: inherit; padding: 6px 0; }
 textarea::placeholder { color: var(--muted); opacity: .42; }
+.composer-actions { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 8px; }
 .pet-control, .dock-plus, .dock-send { flex: 0 0 auto; border-radius: 999px; padding: 0; display: inline-grid; place-items: center; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
 
 .pet-control { --pet-run-y: 0px; position: relative; width: 34px; min-width: 34px; height: 34px; border: 0; background: transparent; box-shadow: none; user-select: none; -webkit-tap-highlight-color: transparent; overflow: visible; }
@@ -1040,6 +1041,59 @@ html[data-faryo-ui="workbench-v2"] :is(button, a, textarea):focus-visible {
     padding-right: 12px;
   }
 
+  html[data-faryo-ui="workbench-v2"] .meta-row {
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 1px 1px 3px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .meta-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .meta-row:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 38%, transparent);
+    outline-offset: 1px;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .meta-main,
+  html[data-faryo-ui="workbench-v2"] .meta-pills {
+    flex: 0 0 auto;
+    max-width: none;
+    overflow: visible;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .meta-main > *,
+  html[data-faryo-ui="workbench-v2"] .meta-pills > * {
+    flex: 0 0 auto;
+  }
+
+  html[data-faryo-ui="workbench-v2"] #modelText {
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .prompt-shell.composer-multiline .composer-actions {
+    align-self: stretch;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 4px;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .prompt-shell.composer-multiline .composer-actions > .dock-plus,
+  html[data-faryo-ui="workbench-v2"] .prompt-shell.composer-multiline .composer-actions > .dock-send {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+
   html[data-faryo-ui="workbench-v2"] .brand-title {
     display: grid !important;
     grid-template-columns: 36px minmax(0, 1fr);
@@ -1141,9 +1195,8 @@ html[data-faryo-ui="workbench-v2"] :is(button, a, textarea):focus-visible {
   .command-suggest-meta { max-width: none; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
   .command-risk { display: inline; margin: 0 0 0 5px; }
   html[data-faryo-ui="workbench-v2"] .meta-main { gap: 4px; }
-  html[data-faryo-ui="workbench-v2"] .meta-pills { max-width: 49%; gap: 4px; }
+  html[data-faryo-ui="workbench-v2"] .meta-pills { max-width: none; gap: 4px; }
   html[data-faryo-ui="workbench-v2"] .goal-pill { max-width: 86px; padding: 1px 5px; font-size: calc(11px + var(--font-step)); }
-  html[data-faryo-ui="workbench-v2"].has-goal-status #modelText { display: none; }
   html[data-faryo-ui="workbench-v2"] .quota-bars { display: none; }
   html[data-faryo-ui="workbench-v2"] #ctxText { font-size: calc(11px + var(--font-step)); }
 }
@@ -1162,6 +1215,14 @@ html[data-faryo-ui="workbench-v2"] :is(button, a, textarea):focus-visible {
     min-width: 42px;
     height: 42px;
     min-height: 42px;
+  }
+
+  html[data-faryo-ui="workbench-v2"] .prompt-shell.composer-multiline .composer-actions > .dock-plus,
+  html[data-faryo-ui="workbench-v2"] .prompt-shell.composer-multiline .composer-actions > .dock-send {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    min-height: 40px;
   }
 }
 

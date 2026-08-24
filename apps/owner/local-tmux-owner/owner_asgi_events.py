@@ -103,6 +103,11 @@ class OwnerEventStreams:
 
     async def response(self, request: Request) -> Response:
         self.support.require_token(request)
+        session = request.query_params.get("session", "")
+        web_managed = self.support.is_app_server_session(session)
+        # Resolve terminal targets before acquiring a bounded stream slot.  A
+        # bad bookmark or namespace conflict must not leak semaphore capacity.
+        terminal_target = None if web_managed else self.support.target(session)
         try:
             await asyncio.wait_for(self.slots.acquire(), timeout=0.01)
         except asyncio.TimeoutError:
@@ -113,18 +118,14 @@ class OwnerEventStreams:
         stream_id = uuid4().hex
         stopped = asyncio.Event()
         self.active[stream_id] = stopped
-        session = request.query_params.get("session", "")
         try:
             lines = int(request.query_params.get("lines", str(self.core.CAPTURE_COMPACT_LINES)))
         except ValueError:
             lines = self.core.CAPTURE_COMPACT_LINES
         lines = max(40, min(lines, self.core.CAPTURE_MAX_LINES))
         cursor = request.headers.get("Last-Event-ID") or request.query_params.get("cursor", "")
-        web_managed = self.support.runtime.has_session(session)
-        # Resolve terminal targets before StreamingResponse sends its headers.
-        # Unknown/bookmarked history ids must produce a normal bounded 404,
-        # not raise inside the body iterator after a 200 SSE response started.
-        terminal_target = None if web_managed else self.support.target(session)
+        # Resolution above also ensures unknown/bookmarked history ids produce
+        # a normal bounded 404 before StreamingResponse sends its headers.
 
         async def stream() -> AsyncIterator[bytes]:
             try:

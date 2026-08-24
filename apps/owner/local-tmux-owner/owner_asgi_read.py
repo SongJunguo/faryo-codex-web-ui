@@ -89,7 +89,7 @@ class OwnerReadRoutes:
         core = self.core
 
         if path == "/api/status":
-            if runtime.has_session(session):
+            if self.support.is_app_server_session(session):
                 payload = await to_thread.run_sync(
                     lambda: core.web_status_payload(runtime, session),
                     abandon_on_cancel=True,
@@ -106,7 +106,7 @@ class OwnerReadRoutes:
             return self.support.json_response(payload)
 
         if path == "/api/interaction":
-            if runtime.has_session(session):
+            if self.support.is_app_server_session(session):
                 capture = await to_thread.run_sync(lambda: runtime.capture(session), abandon_on_cancel=True)
                 snapshot = capture.get("snapshot") or {}
                 payload = {
@@ -125,7 +125,7 @@ class OwnerReadRoutes:
             return self.support.json_response(payload)
 
         if path == "/api/goal":
-            if runtime.has_session(session):
+            if self.support.is_app_server_session(session):
                 capture = await to_thread.run_sync(lambda: runtime.capture(session), abandon_on_cancel=True)
                 goal = (capture.get("snapshot") or {}).get("goal")
                 payload = {"ok": True, **codex_history.goal_details(goal), "updatedAt": core.now_iso()}
@@ -139,7 +139,7 @@ class OwnerReadRoutes:
             return self.support.json_response(payload)
 
         if path == "/api/activity-detail":
-            if not runtime.has_session(session):
+            if not self.support.is_app_server_session(session):
                 raise core.OwnerError("activity detail is unavailable", HTTPStatus.NOT_FOUND)
             try:
                 payload = await to_thread.run_sync(
@@ -161,7 +161,7 @@ class OwnerReadRoutes:
             return await self._diagnostics(path)
 
         if path == "/api/workspace-changes":
-            if runtime.has_session(session):
+            if self.support.is_app_server_session(session):
                 capture = await to_thread.run_sync(lambda: runtime.capture(session), abandon_on_cancel=True)
                 cwd = str((capture.get("record") or {}).get("cwd") or "")
             else:
@@ -295,6 +295,7 @@ class OwnerReadRoutes:
 
     async def _agent_sessions(self, request: Request) -> Response:
         core = self.core
+        self.support.ensure_unambiguous_session_namespace()
         try:
             limit = max(
                 1,
@@ -374,7 +375,7 @@ class OwnerReadRoutes:
         except ValueError as exc:
             raise core.OwnerError("invalid conversation history pagination") from exc
         cursor = request.query_params.get("cursor", "")
-        if self.support.runtime.has_session(session):
+        if self.support.is_app_server_session(session):
             # Keep one identity domain for the lifetime of an App Server
             # session. Switching to rollout JSONL as soon as its file appears
             # changes question keys while live item blocks still use App Server
@@ -411,7 +412,7 @@ class OwnerReadRoutes:
         except ValueError:
             lines = core.CAPTURE_DEFAULT_LINES
         lines = max(40, min(lines, core.CAPTURE_MAX_LINES))
-        if self.support.runtime.has_session(session):
+        if self.support.is_app_server_session(session):
             payload = await to_thread.run_sync(
                 lambda: core.web_capture_payload(self.support.runtime, session, lines),
                 abandon_on_cancel=True,

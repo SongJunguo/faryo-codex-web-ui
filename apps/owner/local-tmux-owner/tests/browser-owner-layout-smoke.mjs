@@ -442,10 +442,113 @@ await withBrowser(
       );
     }
 
+    const narrowStatusLayout = await page.evaluate(async () => {
+      const root = document.documentElement;
+      root.classList.add("has-goal-status");
+      const header = document.querySelector("header");
+      const footer = document.querySelector("footer");
+      const main = document.querySelector("main");
+      const status = document.createElement("div");
+      status.className = "status-line collapsed";
+      status.dataset.faryoLayoutReserve = "";
+      status.innerHTML =
+        '<button class="product-mark" type="button">Faryo 0.0.0</button>';
+      footer.classList.add("status-collapsed");
+      footer.prepend(status);
+
+      const statusRoot = document.createElement("div");
+      statusRoot.innerHTML = `
+        <div class="meta-row" tabindex="0" aria-label="Session status; scroll horizontally for more">
+          <div class="subtitle meta-main">
+            <span id="fixtureContext">Ctx 77.7% · 280k/360k</span>
+            <button class="quota-status quota-top" type="button"><span class="quota-label">Week 42% left</span></button>
+            <span id="fixtureModel">gpt-5.6-example maximum fast</span>
+            <button class="speed-toggle active" type="button">Fast</button>
+          </div>
+          <div class="meta-pills">
+            <button class="pill goal-pill goal-active" type="button">Goal Active</button>
+            <span class="pill git-pill clean">branch-with-a-readable-name</span>
+          </div>
+        </div>`;
+      header.append(statusRoot);
+
+      await new Promise((resolve) =>
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+      );
+      main.scrollTop = main.scrollHeight;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+
+      const rail = statusRoot.querySelector(".meta-row");
+      const model = document.getElementById("fixtureModel");
+      const version = status.querySelector(".product-mark");
+      const lastMessage = document.getElementById("lastMessage");
+      const footerRect = footer.getBoundingClientRect();
+      const statusRect = status.getBoundingClientRect();
+      const versionRect = version.getBoundingClientRect();
+      const lastRect = lastMessage.getBoundingClientRect();
+      const overlapArea =
+        Math.max(
+          0,
+          Math.min(versionRect.right, lastRect.right) -
+            Math.max(versionRect.left, lastRect.left),
+        ) *
+        Math.max(
+          0,
+          Math.min(versionRect.bottom, lastRect.bottom) -
+            Math.max(versionRect.top, lastRect.top),
+        );
+      const maxScroll = rail.scrollWidth - rail.clientWidth;
+      rail.scrollLeft = maxScroll;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      return {
+        reserve: Number.parseFloat(
+          getComputedStyle(root).getPropertyValue("--faryo-composer-reserve"),
+        ),
+        footerHeight: footerRect.height,
+        overflowTop: footerRect.top - statusRect.top,
+        statusTop: statusRect.top,
+        lastMessageBottom: lastRect.bottom,
+        overlapArea,
+        railOverflowX: getComputedStyle(rail).overflowX,
+        railScrollbarWidth: getComputedStyle(rail).scrollbarWidth,
+        railClientWidth: rail.clientWidth,
+        railScrollWidth: rail.scrollWidth,
+        maxScroll,
+        endScroll: rail.scrollLeft,
+        modelDisplay: getComputedStyle(model).display,
+        pageHorizontalOverflow:
+          document.documentElement.scrollWidth >
+          document.documentElement.clientWidth + 1,
+      };
+    });
+    if (
+      narrowStatusLayout.overflowTop < 20 ||
+      Math.abs(
+        narrowStatusLayout.reserve -
+          Math.ceil(
+            narrowStatusLayout.footerHeight + narrowStatusLayout.overflowTop,
+          ),
+      ) > 1 ||
+      narrowStatusLayout.lastMessageBottom > narrowStatusLayout.statusTop - 8 ||
+      narrowStatusLayout.overlapArea !== 0 ||
+      narrowStatusLayout.railOverflowX !== "auto" ||
+      narrowStatusLayout.railScrollbarWidth !== "none" ||
+      narrowStatusLayout.maxScroll <= 0 ||
+      narrowStatusLayout.endScroll < narrowStatusLayout.maxScroll - 1 ||
+      narrowStatusLayout.modelDisplay === "none" ||
+      narrowStatusLayout.pageHorizontalOverflow
+    ) {
+      throw new Error(
+        `Narrow status surfaces lost content or covered the transcript: ${JSON.stringify(narrowStatusLayout)}`,
+      );
+    }
+
     await page.evaluate(() => window.__faryoComposerController.destroy());
   },
 );
 
 console.log(
-  "faryo-owner-layout=PASS collapsed-label=safe keyboard-app-shell=viewport-resize composer=transparent-overlay",
+  "faryo-owner-layout=PASS collapsed-label=safe keyboard-app-shell=viewport-resize composer=transparent-overlay status=horizontal-scroll footer=measured-overflow",
 );

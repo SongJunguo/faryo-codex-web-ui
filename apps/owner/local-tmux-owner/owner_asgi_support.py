@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import FileResponse, Response
 
 import owner_http
+import session_namespace
 from faryo_cli import browser_contract
 
 
@@ -42,6 +43,13 @@ class OwnerAsgiSupport:
         self.core = core
         self.config = config
         self.runtime = runtime
+        self.session_namespace = session_namespace.SessionNamespace(
+            terminal_names=lambda: core.tmux_sessions(config),
+            app_server_names=lambda: (
+                str(record.get("session") or "")
+                for record in runtime.session_records()
+            ),
+        )
 
     @staticmethod
     def json_response(value: dict[str, Any], status: int = HTTPStatus.OK) -> Response:
@@ -136,7 +144,34 @@ class OwnerAsgiSupport:
         return value.strip() if value and value.strip() else None
 
     def target(self, session: str | None) -> Any:
+        if self.session_owner(session) == session_namespace.APP_SERVER_OWNER:
+            raise self.core.OwnerError(
+                "session belongs to Codex App Server",
+                HTTPStatus.CONFLICT,
+            )
         return self.core.target_config(self.config, session)
+
+    def session_owner(self, session: str | None) -> str | None:
+        try:
+            return self.session_namespace.owner(session)
+        except session_namespace.SessionNamespaceConflict as exc:
+            raise self.core.OwnerError(
+                "session name is owned by multiple backends; return Home and reopen the session",
+                HTTPStatus.CONFLICT,
+            ) from exc
+
+    def is_app_server_session(self, session: str | None) -> bool:
+        return self.session_owner(session) == session_namespace.APP_SERVER_OWNER
+
+    def app_server_session_names(self) -> list[str]:
+        return self.session_namespace.reserved_for_terminal()
+
+    def ensure_unambiguous_session_namespace(self) -> None:
+        if self.session_namespace.collisions():
+            raise self.core.OwnerError(
+                "session names are owned by multiple backends; reload after Owner recovery",
+                HTTPStatus.CONFLICT,
+            )
 
     @staticmethod
     def file_response(path: Path, content_type: str, *, download: bool = False) -> FileResponse:

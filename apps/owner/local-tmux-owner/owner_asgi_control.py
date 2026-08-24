@@ -74,7 +74,7 @@ class OwnerControlRoutes:
             return await self._resume(request, payload)
 
         session = str(payload.get("session") or "")
-        if self.support.runtime.has_session(session):
+        if self.support.is_app_server_session(session):
             return await self._web_action(path, payload, session)
         target = self.support.target(session)
         await to_thread.run_sync(lambda: self.core.ensure_pane_width(target), abandon_on_cancel=True)
@@ -192,10 +192,7 @@ class OwnerControlRoutes:
                 title=title,
                 launch_id=launch_id or "",
                 context_window_k=context_window_k,
-                reserved_names=lambda: [
-                    str(record.get("session") or "")
-                    for record in self.support.runtime.session_records()
-                ],
+                reserved_names=self.support.app_server_session_names,
             ),
             abandon_on_cancel=True,
         )
@@ -212,7 +209,7 @@ class OwnerControlRoutes:
 
     async def _close(self, payload: dict[str, Any]) -> Response:
         session = str(payload.get("session") or "")
-        if self.support.runtime.has_session(session):
+        if self.support.is_app_server_session(session):
             interrupt = payload.get("interrupt") is True
             try:
                 result = await to_thread.run_sync(
@@ -291,6 +288,7 @@ class OwnerControlRoutes:
                     True,
                     context_window_k,
                     remote_app_server,
+                    self.support.app_server_session_names,
                 )
 
         session = await to_thread.run_sync(

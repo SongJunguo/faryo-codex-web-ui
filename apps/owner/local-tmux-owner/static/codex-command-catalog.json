@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "testedCodexVersion": "0.149.0",
+  "testedCodexVersion": "0.149.1",
   "commands": [
     {"command":"/model","description":"Choose the model and reasoning effort","category":"Model","behavior":"menu","availableDuringTask":true},
     {"command":"/fast","description":"Toggle faster responses with increased usage","category":"Model","behavior":"local_action","availableDuringTask":true},

@@ -14,7 +14,7 @@ const expectedVisibleCommands = [
   '/clear',
 ];
 
-assert.equal(commands.testedCodexVersion, '0.149.0');
+assert.equal(commands.testedCodexVersion, '0.149.1');
 assert.deepEqual(commands.inventory.map((entry) => entry.command), expectedVisibleCommands);
 const catalog = JSON.parse(fs.readFileSync(path.join(__dirname, '../static/codex-command-catalog.json'), 'utf8'));
 assert.deepEqual(catalog.commands.map((entry) => entry.command), expectedVisibleCommands);
@@ -49,7 +49,7 @@ assert.equal(commands.inventory.find((entry) => entry.command === '/feedback').r
 assert.equal(commands.replaceInventory([
   { command: '/model', description: 'Runtime model', behavior: 'menu' },
   { command: '/future-command', description: 'Future command', behavior: 'unclassified' },
-], { observedCodexVersion: '0.149.0', drifted: true }), true);
+], { observedCodexVersion: '0.149.1', drifted: true }), true);
 assert.deepEqual(commands.inventory.map((entry) => entry.command), ['/model', '/future-command']);
 assert.equal(commands.match('/future')[0].command, '/future-command');
 assert.equal(commands.inventory[1].risk, 'unclassified');

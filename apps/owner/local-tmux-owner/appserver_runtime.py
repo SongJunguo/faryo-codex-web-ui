@@ -178,10 +178,14 @@ class AppServerRuntime:
         launch_id: str = "",
         timeout: float = RUNTIME_CALL_TIMEOUT,
     ) -> dict[str, Any]:
-        return self._submit(
-            self._start_session(cwd, title, model, service_tier, context_window_k, launch_id),
-            timeout,
-        )
+        # The namespace lock is intentionally held by the calling thread while
+        # the App Server RPC completes.  The event-loop coroutine must not try
+        # to reacquire this cross-backend lock from a different thread.
+        with self.namespace_lock:
+            return self._submit(
+                self._start_session(cwd, title, model, service_tier, context_window_k, launch_id),
+                timeout,
+            )
 
     def resume_session(
         self,
@@ -194,10 +198,11 @@ class AppServerRuntime:
         context_window_k: int = 0,
         timeout: float = RUNTIME_CALL_TIMEOUT,
     ) -> dict[str, Any]:
-        return self._submit(
-            self._resume_session(thread_id, cwd, title, model, service_tier, context_window_k),
-            timeout,
-        )
+        with self.namespace_lock:
+            return self._submit(
+                self._resume_session(thread_id, cwd, title, model, service_tier, context_window_k),
+                timeout,
+            )
 
     def send(self, name: str, text: str, client_message_id: str, timeout: float = RUNTIME_CALL_TIMEOUT) -> dict[str, Any]:
         return self._submit(self._send(name, text, client_message_id), timeout)
@@ -496,15 +501,14 @@ class AppServerRuntime:
         thread_id = str(thread.get("id") or "") if isinstance(thread, Mapping) else ""
         if not thread_id:
             raise AppServerRuntimeError("Codex App Server did not return a thread id")
-        with self.namespace_lock:
-            record = self.registry.add(
-                thread_id=thread_id,
-                cwd=cwd,
-                title=title,
-                model=model,
-                launch_id=launch_id,
-                reserved=self.reserved_names(),
-            )
+        record = self.registry.add(
+            thread_id=thread_id,
+            cwd=cwd,
+            title=title,
+            model=model,
+            launch_id=launch_id,
+            reserved=self.reserved_names(),
+        )
         actor = WebSessionActor(session_id=record.name, thread_id=thread_id)
         if isinstance(thread, Mapping):
             actor.hydrate(thread)

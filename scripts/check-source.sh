@@ -105,6 +105,8 @@ release_checks() {
     "$ROOT/apps/owner/local-tmux-owner/appserver_runtime.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_session.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_transport.py" \
+    "$ROOT/apps/owner/local-tmux-owner/session_launch.py" \
+    "$ROOT/apps/owner/local-tmux-owner/session_namespace.py" \
     "$ROOT/apps/owner/local-tmux-owner/owner_asgi.py" \
     "$ROOT/apps/owner/local-tmux-owner/owner_asgi_control.py" \
     "$ROOT/apps/owner/local-tmux-owner/owner_asgi_events.py" \
@@ -199,6 +201,7 @@ release_checks() {
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-structured-interactions.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-goal-details.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-command-activity.mjs"
+  "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-tui-history-boundaries.mjs"
   "$NODE_BIN" --check "$ROOT/apps/owner/local-tmux-owner/tests/browser-real-command-timeline.mjs"
   "$NODE_BIN" --check "$ROOT/apps/gateway/server/tests/browser-workbench-smoke.mjs"
   "$NODE_BIN" --check "$ROOT/apps/gateway/server/tests/browser-resume-preflight.mjs"
@@ -271,6 +274,7 @@ appserver_history_source = (root / "apps/owner/local-tmux-owner/appserver_histor
 appserver_rollout_source = (root / "apps/owner/local-tmux-owner/appserver_rollout.py").read_text(encoding="utf-8")
 appserver_registry_source = (root / "apps/owner/local-tmux-owner/appserver_registry.py").read_text(encoding="utf-8")
 appserver_runtime_source = (root / "apps/owner/local-tmux-owner/appserver_runtime.py").read_text(encoding="utf-8")
+session_namespace_source = (root / "apps/owner/local-tmux-owner/session_namespace.py").read_text(encoding="utf-8")
 command_timeline_source = (root / "apps/owner/local-tmux-owner/command_timeline.py").read_text(encoding="utf-8")
 real_appserver_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-real-appserver-streaming.mjs").read_text(encoding="utf-8")
 durable_activity_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-durable-activity.mjs").read_text(encoding="utf-8")
@@ -305,7 +309,7 @@ application_source = (root / "src/faryo_cli/application.py").read_text(encoding=
 gateway_ui = gateway + "\n" + gateway_workbench
 assert "firstAvailableDirectoryPage" in gateway_workbench and "for (const candidate of candidates)" in gateway_workbench, "directory picker must try every recent cwd before root fallback"
 assert "START_DIRECTORY_MAX_ENTRIES" not in owner_server and "folders = (data.directories || []).map" in gateway_workbench, "directory picker must not cap or cross-section-filter real child folders"
-assert "def reassign_conflicts(" in appserver_registry_source and "namespace_lock=core.RUNTIME_LOCK" in owner_asgi_source and "reserved_names=lambda:" in owner_asgi_control_source and "r.next_faryo_session_name(config, reserved_names)" in owner_session_launch_source and "self.registry.reassign_conflicts" in appserver_runtime_source, "App Server and TUI sessions must share one faryo-number namespace"
+assert "class SessionNamespace" in session_namespace_source and "SessionNamespaceConflict" in session_namespace_source and "namespace_lock=core.RUNTIME_LOCK" in owner_asgi_source and "reserved_names=self.support.app_server_session_names" in owner_asgi_control_source and "reserved_names=reserved_names" in owner_session_launch_source and "self.registry.reassign_conflicts" in appserver_runtime_source, "App Server and TUI sessions must share one fail-closed faryo-number namespace"
 ci_workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
 release_workflow = (root / ".github/workflows/release.yml").read_text(encoding="utf-8")
 codeql_workflow = (root / ".github/workflows/codeql.yml").read_text(encoding="utf-8")
@@ -562,7 +566,8 @@ assert "appserver_rollout.activity_blocks" in owner_server and 'payload_type == 
 assert "CommandTimelineStore" in command_timeline_source and "NON_DURABLE_COMMANDS" in command_timeline_source and "commandEvents" in owner_server, "browser-issued commands must use the private typed command lifecycle"
 assert 'path == "/api/activity-detail"' in owner_asgi_read_source and "activity_projection" in appserver_session_source and "appserver_rollout.activity_detail" in owner_server, "typed activity details must remain authenticated, bounded and reconnect-safe"
 assert "mergeCommandEvents" in app and "activity?.detailAvailable" in app and "page.reload" in command_activity_browser_source, "command rows and on-demand activity details need an ordinary-reload browser gate"
-assert "mergeMessageBlocks(displayBlocks(), liveBlocks)" in history_controller_source and "if (capture.streaming) return capture" in history_controller_source, "settled history must not replace a live App Server capture"
+assert "const historyBlocks = displayBlocks()" in history_controller_source and "messageBlocks: mergeMessageBlocks(historyBlocks, liveBlocks)" in history_controller_source and "if (capture.streaming) return capture" in history_controller_source, "settled history must not replace a live App Server capture"
+assert '"codex-jsonl"' in history_controller_source and "messageBlocks: historyBlocks" in history_controller_source and "def codex_history_turn_content(" in owner_server, "TUI JSONL history must preserve authoritative message boundaries"
 assert "appserver-stream-progress" in app and "appserver-stream-progress" in owner_style, "App Server streaming must expose a visible progress state"
 assert "state.activeLengthCount < 2" in real_appserver_browser_source and "state.loadedQuestionMarkers < 2" in real_appserver_browser_source and "state.userBlockCount < 2" in real_appserver_browser_source and "!questionJump.targetUser" in real_appserver_browser_source, "real App Server browser validation must prove incremental roles and a working question jump"
 assert "FARYO_SMOKE_MIN_COMMANDS" in durable_activity_browser_source and "page.reload" in durable_activity_browser_source and "compact-activity-item" in durable_activity_browser_source, "durable activity browser validation must inspect real items after an ordinary reload"

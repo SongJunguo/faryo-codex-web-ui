@@ -8,10 +8,26 @@
   'use strict';
 
   const DEFAULT_PROPERTY = '--faryo-composer-reserve';
+  const RESERVE_SELECTOR = '[data-faryo-layout-reserve]';
 
   function measuredHeight(element) {
-    const height = Number(element?.getBoundingClientRect?.().height || 0);
-    return Number.isFinite(height) ? Math.max(0, Math.ceil(height)) : 0;
+    const bounds = element?.getBoundingClientRect?.();
+    const height = Number(bounds?.height || 0);
+    if (!Number.isFinite(height)) return 0;
+    let top = Number(bounds?.top);
+    let bottom = Number(bounds?.bottom);
+    if (!Number.isFinite(top) || !Number.isFinite(bottom)) return Math.max(0, Math.ceil(height));
+    for (const reserved of element.querySelectorAll?.(RESERVE_SELECTOR) || []) {
+      const rect = reserved.getBoundingClientRect?.();
+      const reservedHeight = Number(rect?.height || 0);
+      const reservedTop = Number(rect?.top);
+      const reservedBottom = Number(rect?.bottom);
+      if (!Number.isFinite(reservedHeight) || reservedHeight <= 0
+        || !Number.isFinite(reservedTop) || !Number.isFinite(reservedBottom)) continue;
+      top = Math.min(top, reservedTop);
+      bottom = Math.max(bottom, reservedBottom);
+    }
+    return Math.max(0, Math.ceil(Math.max(height, bottom - top)));
   }
 
   function createComposerLayout(view, options = {}) {
@@ -56,7 +72,10 @@
       ? new ResizeObserverCtor(schedule)
       : null;
     resizeObserver?.observe(footer);
-    const mutationObserver = !resizeObserver && typeof MutationObserverCtor === 'function'
+    for (const reserved of footer.querySelectorAll?.(RESERVE_SELECTOR) || []) {
+      resizeObserver?.observe(reserved);
+    }
+    const mutationObserver = typeof MutationObserverCtor === 'function'
       ? new MutationObserverCtor(schedule)
       : null;
     mutationObserver?.observe(footer, {
@@ -64,6 +83,10 @@
       childList: true,
       characterData: true,
       subtree: true,
+    });
+    mutationObserver?.observe(rootElement, {
+      attributes: true,
+      attributeFilter: ['data-size'],
     });
     view.addEventListener?.('resize', schedule, { passive: true });
     measure(true);

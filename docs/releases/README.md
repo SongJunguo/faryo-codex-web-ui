@@ -8,7 +8,7 @@ fork's source-only GitHub Release notes.
 
 The maintained fork is source-only and Codex-focused. Use the repository root
 [`README.md`](../../README.md) for current scope, deployment, and validation.
-The current maintained release is [`v1.10.3`](v1.10.3.md). It restores command,
-search and edit activity after App Server reconnects, deduplicates it against
-live events and keeps the result compact and inspectable. The source-only
-distribution and security boundary are unchanged.
+The current maintained release is [`v1.11.8`](v1.11.8.md). It preserves
+authoritative TUI message boundaries, prevents App Server/TUI short-name
+collisions, and improves narrow-screen status and composer layout. The
+source-only distribution and security boundary are unchanged.

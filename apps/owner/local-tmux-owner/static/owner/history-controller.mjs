@@ -150,19 +150,25 @@ export function createHistoryController(options = {}) {
       return capture;
     }
     const historyText = displayText();
+    const historyBlocks = displayBlocks();
     if (capture.captureSource === "codex-app-server") {
       const liveBlocks = normalizeMessageBlocks(capture.messageBlocks);
       if (liveBlocks.length) {
         return {
           ...capture,
           text: capture.streaming ? String(capture.text || historyText) : historyText,
-          messageBlocks: mergeMessageBlocks(displayBlocks(), liveBlocks),
+          messageBlocks: mergeMessageBlocks(historyBlocks, liveBlocks),
           historyTotalTurns: history.totalTurns,
         };
       }
       if (capture.streaming) return capture;
     }
-    return { ...capture, text: historyText, historyTotalTurns: history.totalTurns };
+    return {
+      ...capture,
+      text: historyText,
+      ...(historyBlocks.length ? { messageBlocks: historyBlocks } : {}),
+      historyTotalTurns: history.totalTurns,
+    };
   }
 
   function reset() {

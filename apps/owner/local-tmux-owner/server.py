@@ -44,6 +44,7 @@ import appserver_history
 import appserver_rollout
 import session_catalog
 import session_launch
+import session_namespace
 import codex_tui_interactions
 import interaction_service
 import command_timeline
@@ -673,7 +674,7 @@ def agent_ready_for_input(config: Config, profile: AgentProfile = CODEX_PROFILE)
     return bool(lines and profile.input_prompt_re.match(lines[-1]))
 
 
-FARYO_MANAGED_SESSION_RE = re.compile(r"^faryo([1-9][0-9]*)$")
+FARYO_MANAGED_SESSION_RE = session_namespace.SESSION_NAME_RE
 clean_tmux_session_name = tmux_runtime.clean_tmux_session_name
 clean_agent_session_id = tmux_runtime.clean_agent_session_id
 clean_client_message_id = tmux_runtime.clean_client_message_id
@@ -1300,9 +1301,17 @@ def codex_history_state(history_path: str | None) -> dict[str, Any] | None:
         return copy_codex_history_state(cached)
 
 
-def codex_history_turn_text(handle: Any, turn: dict[str, Any]) -> str:
-    blocks: list[str] = []
-    for start, end in turn.get("records") or []:
+def codex_history_turn_content(handle: Any, turn: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    """Project one indexed rollout turn into compatibility text and authoritative blocks.
+
+    The rollout record already owns the user/assistant boundary.  Returning that
+    boundary prevents quoted TUI prompts inside a real message from being parsed
+    as additional browser turns.
+    """
+    text_blocks: list[str] = []
+    message_blocks: list[dict[str, Any]] = []
+    turn_key = str(turn.get("key") or "")
+    for record_index, (start, end) in enumerate(turn.get("records") or []):
         try:
             handle.seek(int(start))
             raw_line = handle.read(max(0, int(end) - int(start))).rstrip(b"\n")
@@ -1312,8 +1321,26 @@ def codex_history_turn_text(handle: Any, turn: dict[str, Any]) -> str:
         if message is None:
             continue
         role, text = message
-        blocks.append(f"› {text}" if role == "user" else f"• {text}")
-    return "\n\n".join(blocks).strip()
+        kind = "user" if role == "user" else "output"
+        text_blocks.append(f"› {text}" if role == "user" else f"• {text}")
+        block = {
+            "id": f"jsonl-{turn_key}-record-{record_index:x}",
+            "turnKey": turn_key,
+            "segmentKey": f"record-{record_index:x}",
+            "kind": kind,
+            "role": role,
+            "text": text,
+            "revision": 0,
+            "final": True,
+        }
+        if kind == "user":
+            block["questionKey"] = turn_key
+        message_blocks.append(block)
+    return "\n\n".join(text_blocks).strip(), message_blocks
+
+
+def codex_history_turn_text(handle: Any, turn: dict[str, Any]) -> str:
+    return codex_history_turn_content(handle, turn)[0]
 
 
 def codex_conversation_history_page(
@@ -1349,11 +1376,13 @@ def codex_conversation_history_page(
     try:
         with path.open("rb") as handle:
             for turn in selected:
+                text, blocks = codex_history_turn_content(handle, turn)
                 rendered.append({
                     "index": int(turn["index"]),
                     "key": str(turn["key"]),
                     "preview": str(turn["preview"]),
-                    "text": codex_history_turn_text(handle, turn),
+                    "text": text,
+                    "blocks": blocks,
                 })
     except OSError as exc:
         raise OwnerError("structured conversation history is unavailable", HTTPStatus.NOT_FOUND) from exc

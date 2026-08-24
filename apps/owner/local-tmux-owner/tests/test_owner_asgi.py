@@ -215,6 +215,8 @@ class OwnerAsgiTest(unittest.TestCase):
         ))
         self.pane_cwd = mock.patch.object(server, "get_pane_cwd", return_value=self.cwd)
         self.pane_cwd.start()
+        self.tmux_sessions_patcher = mock.patch.object(server, "tmux_sessions", return_value=[])
+        self.tmux_sessions = self.tmux_sessions_patcher.start()
         self.thread = threading.Thread(target=self.uvicorn.run, daemon=True)
         self.thread.start()
         deadline = time.monotonic() + 3
@@ -228,6 +230,7 @@ class OwnerAsgiTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.uvicorn.should_exit = True
         self.thread.join(4)
+        self.tmux_sessions_patcher.stop()
         self.pane_cwd.stop()
         self.temp.cleanup()
 
@@ -449,6 +452,7 @@ class OwnerAsgiTest(unittest.TestCase):
         activity_lookup.assert_called_once_with("/private/authoritative.jsonl", ["turn_demo"])
 
     def test_resume_can_switch_from_app_server_history_to_tui(self) -> None:
+        self.runtime.sessions.add("faryo4")
         with (
             mock.patch.object(server, "codex_resume_directory_requirement", return_value=None),
             mock.patch.object(server, "resume_agent_session", return_value="faryo3") as resume,
@@ -468,6 +472,7 @@ class OwnerAsgiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["session"], "faryo3")
         self.assertEqual(resume.call_args.args[2], "codex-cli")
+        self.assertEqual(resume.call_args.args[-1](), ["faryo4"])
 
     def test_resume_uses_remote_tui_while_resident_app_server_releases_writer(self) -> None:
         self.runtime.loaded_threads.add("thread_switch_tui")
@@ -488,7 +493,39 @@ class OwnerAsgiTest(unittest.TestCase):
             )
 
         self.assertEqual(status, 200, body)
-        self.assertTrue(resume.call_args.args[-1])
+        self.assertTrue(resume.call_args.args[-2])
+
+    def test_duplicate_backend_name_fails_closed_for_read_write_stream_and_home(self) -> None:
+        self.runtime.sessions.add("faryo1")
+        self.tmux_sessions.return_value = ["faryo1"]
+
+        requests = [
+            ("GET", "/api/status?session=faryo1", None),
+            ("GET", "/api/events?session=faryo1", None),
+            ("GET", "/api/agent-sessions?view=split", None),
+            (
+                "POST",
+                "/api/send",
+                {
+                    "session": "faryo1",
+                    "text": "anonymous",
+                    "clientMessageId": "client_namespace_conflict_1",
+                },
+            ),
+        ]
+        for method, path, body_value in requests:
+            with self.subTest(method=method, path=path):
+                status, headers, body = self.request(
+                    method,
+                    path,
+                    body_value,
+                    token=True,
+                )
+                self.assertEqual(status, 409, body)
+                self.assertEqual(headers.get("cache-control"), "no-store")
+                self.assertIn("multiple backends", json.loads(body)["error"])
+
+        self.assertEqual(self.runtime.sent, [])
 
     def test_new_tui_launch_reserves_existing_app_server_session_names(self) -> None:
         self.runtime.sessions.add("faryo4")

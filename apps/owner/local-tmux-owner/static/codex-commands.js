@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const TESTED_CODEX_VERSION = '0.149.0';
+  const TESTED_CODEX_VERSION = '0.149.1';
 
   const busySafeCommands = new Set([
     '/model', '/fast', '/ide', '/permissions', '/approve', '/skills', '/hooks',
