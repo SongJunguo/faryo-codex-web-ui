@@ -5,12 +5,14 @@
 
 ## Active
 
-- [`v1.11.8-mobile-history-status-reliability-plan.md`](v1.11.8-mobile-history-status-reliability-plan.md)：
-  修复 TUI JSONL 历史被终端启发式二次切分、问题导航/复制边界漂移、底部状态覆盖末条消息，
-  并为窄屏连续状态信息建立可触摸横向浏览、真实 footer footprint、多行 composer 纵向操作组，
-  以及 TUI/App Server 单一短名命名域和冲突失败关闭验收。
+当前无活动计划。
 
 ## Completed or maintenance mode
+
+- [`v1.11.8-mobile-history-status-reliability-plan.md`](v1.11.8-mobile-history-status-reliability-plan.md)：
+  以权威 TUI JSONL blocks 修复历史边界、问题导航和复制漂移；建立动态 footer footprint、
+  窄屏状态横滑、多行 composer 纵向操作组，以及 TUI/App Server 单一短名命名域和冲突
+  失败关闭。source/browser/真实部署与普通 reload 验收已完成。
 
 - [`v1.11-command-and-tool-timeline-plan.md`](v1.11-command-and-tool-timeline-plan.md)：
   把 `/rename`、`/model`、`/fast`、`/permissions` 和 Goal 等本地会话命令建模为不进入
