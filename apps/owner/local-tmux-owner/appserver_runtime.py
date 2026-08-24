@@ -971,7 +971,17 @@ class AppServerRuntime:
         }
 
     async def _capture(self, name: str) -> dict[str, Any]:
-        record, actor = self._require_session(name)
+        record = self.registry.get(name)
+        if record is None:
+            raise AppServerRuntimeError("Codex App Server session is unavailable")
+        actor = self.actors.get(name)
+        if actor is None:
+            # Control-plane readiness intentionally does not wait for every
+            # session worker.  Return an immediate loading projection while
+            # the supervisor reconnects and hydrates the authoritative actor.
+            actor = WebSessionActor(session_id=name, thread_id=record.thread_id)
+            actor.require_durable_activity()
+            self.actors[name] = actor
         snapshot = actor.snapshot()
         snapshot["rateLimits"] = dict(self.rate_limits)
         return {

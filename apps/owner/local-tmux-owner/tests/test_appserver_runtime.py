@@ -777,6 +777,59 @@ class RuntimeTest(unittest.TestCase):
             [],
         )
 
+    def test_owner_restart_capture_returns_loading_before_worker_hydration(self) -> None:
+        release_resume = threading.Event()
+        clients = []
+
+        class SlowResumeClient(FakeRuntimeClient):
+            async def rpc(self, method, params, **options):
+                if method == "thread/resume":
+                    while not release_resume.is_set():
+                        await asyncio.sleep(0.01)
+                return await super().rpc(method, params, **options)
+
+        def factory(notification, disconnected):
+            client = SlowResumeClient(notification, disconnected)
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            registry_path = root / "registry.json"
+            registry = WebSessionRegistry(registry_path)
+            record = registry.add(
+                name="faryo1",
+                worker_id="a" * 24,
+                thread_id="thread_restore",
+                cwd="/workspace",
+            )
+            manager = TrackingWorkerManager(root / "workers")
+            runtime = AppServerRuntime(
+                socket_path=root / "control.sock",
+                registry_path=registry_path,
+                client_version="test",
+                client_factory=factory,
+                worker_manager=manager,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            loading = runtime.capture(record.name)
+            with self.assertRaisesRegex(RuntimeError, "reconnecting"):
+                runtime.send(record.name, "Too early", "client_before_hydration")
+            release_resume.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if runtime.registry.get(record.name).worker_state == "ready":
+                    break
+                time.sleep(0.01)
+            hydrated = runtime.capture(record.name)
+            runtime.stop()
+
+        self.assertEqual(loading["snapshot"]["lifecycle"], "loading")
+        self.assertEqual(loading["record"]["workerState"], "starting")
+        self.assertEqual(hydrated["snapshot"]["lifecycle"], "idle")
+        self.assertEqual(hydrated["record"]["workerState"], "ready")
+
     def test_active_turn_send_steers_and_explicit_close_interrupts(self) -> None:
         clients = []
 

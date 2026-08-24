@@ -240,6 +240,10 @@ class AsyncCodexAppServerClient:
                 raise AppServerUnavailable("Codex App Server write failed") from exc
         try:
             return await asyncio.wait_for(asyncio.shield(future), timeout=max(0.01, timeout))
+        except asyncio.CancelledError:
+            self._pending.pop(request_id, None)
+            future.cancel()
+            raise
         except asyncio.TimeoutError as exc:
             self._pending.pop(request_id, None)
             future.cancel()

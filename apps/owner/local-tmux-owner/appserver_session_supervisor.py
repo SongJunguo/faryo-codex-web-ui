@@ -133,6 +133,9 @@ class AppServerSessionSupervisor:
     def client(self, name: str) -> AsyncCodexAppServerClient:
         if self.circuit_until.get(name, 0.0) > time.monotonic():
             raise AppServerUnavailable("Codex App Server worker is reconnecting after repeated failures")
+        record = self.record(name)
+        if record is None or record.worker_state not in {"ready", "degraded"}:
+            raise AppServerUnavailable("Codex App Server worker is reconnecting")
         client = self.clients.get(name)
         if client is None or not client.ready:
             raise AppServerUnavailable("Codex App Server worker is reconnecting")

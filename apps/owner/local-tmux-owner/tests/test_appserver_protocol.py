@@ -847,6 +847,15 @@ class TransportTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.client.ready)
         self.assertEqual(self.client.pending_count, 0)
 
+    async def test_cancelled_request_removes_its_pending_future(self) -> None:
+        task = asyncio.create_task(self.client.rpc("thread/read", {}))
+        await asyncio.sleep(0)
+        self.assertEqual(self.client.pending_count, 1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertEqual(self.client.pending_count, 0)
+
     async def test_slow_notification_consumer_disconnects_instead_of_unbounded_buffering(self) -> None:
         socket = FakeSocket()
         release = asyncio.Event()

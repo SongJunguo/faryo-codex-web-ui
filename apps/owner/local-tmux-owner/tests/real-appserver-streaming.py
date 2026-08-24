@@ -51,6 +51,10 @@ for the required write. After it completes, briefly report the content and end w
 USER_INPUT_PROMPT = """Use the request_user_input tool exactly once. Ask me to choose between Alpha and Beta,
 with header Choice. After I answer, state the selected value and end with USER_INPUT_DONE. Do not use other tools.
 """
+ISOLATION_SECOND_PROMPT = "Reply exactly with SECOND_WORKER_OK. Do not use tools."
+ISOLATION_FIRST_RECOVERY_PROMPT = "Reply exactly with FIRST_WORKER_RECOVERED. Do not use tools."
+ISOLATION_SECOND_AFTER_CRASH_PROMPT = "Reply exactly with SECOND_WORKER_UNAFFECTED. Do not use tools."
+ISOLATION_CLI_PROMPT = "Reply exactly with ORDINARY_CODEX_CLI_OK. Do not use tools."
 
 
 class SubprocessWorkerManager:
@@ -114,6 +118,30 @@ class SubprocessWorkerManager:
         with self.lock:
             self._stop_locked(selected, timeout=timeout)
 
+    def pid(self, worker_id: str) -> int:
+        selected = validate_worker_id(worker_id)
+        with self.lock:
+            process = self.processes.get(selected)
+            if process is None or process.poll() is not None:
+                raise RuntimeError("real App Server worker is not running")
+            return process.pid
+
+    def crash(self, worker_id: str) -> None:
+        selected = validate_worker_id(worker_id)
+        with self.lock:
+            process = self.processes.pop(selected, None)
+            handle = self.logs.pop(selected, None)
+            if process is None or process.poll() is not None:
+                raise RuntimeError("real App Server worker is not running")
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
+            if handle is not None:
+                handle.close()
+            self.socket_path(selected).unlink(missing_ok=True)
+
     def _stop_locked(self, worker_id: str, *, timeout: float = 5.0) -> None:
         process = self.processes.pop(worker_id, None)
         handle = self.logs.pop(worker_id, None)
@@ -148,6 +176,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--browser", action="store_true")
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--interactions", action="store_true")
+    parser.add_argument("--isolation", action="store_true")
     return parser.parse_args()
 
 
@@ -373,6 +402,148 @@ def main() -> int:
                     f"observed_lengths={len(set(partial_lengths))} "
                     "markdown=yes tex=yes jsonl=yes body_free_journal=yes"
                 )
+                if args.isolation:
+                    second_started = runtime.start_session(
+                        cwd=str(workspace),
+                        title="Faryo isolation peer",
+                        launch_id="real_appserver_isolation_peer",
+                    )
+                    second_session = str(second_started["session"])
+                    runtime.send(
+                        second_session,
+                        ISOLATION_SECOND_PROMPT,
+                        "real_appserver_isolation_second_initial",
+                    )
+                    wait_for_final_marker(
+                        runtime,
+                        second_session,
+                        "SECOND_WORKER_OK",
+                        max(30.0, args.timeout),
+                    )
+                    first_record = runtime.registry.get(session)
+                    second_record = runtime.registry.get(second_session)
+                    if first_record is None or second_record is None:
+                        raise RuntimeError("real isolation registry entries are unavailable")
+                    first_client = runtime._require_session_client(session)
+                    second_client = runtime._require_session_client(second_session)
+                    first_loaded = runtime._submit(
+                        first_client.rpc("thread/loaded/list", {}),
+                        5,
+                    )
+                    second_loaded = runtime._submit(
+                        second_client.rpc("thread/loaded/list", {}),
+                        5,
+                    )
+                    control_client = runtime._require_control_client()
+                    control_loaded = runtime._submit(
+                        control_client.rpc("thread/loaded/list", {}),
+                        5,
+                    )
+                    if set(first_loaded.get("data") or []) != {first_record.thread_id}:
+                        raise RuntimeError("first real worker loaded more than its own thread")
+                    if set(second_loaded.get("data") or []) != {second_record.thread_id}:
+                        raise RuntimeError("second real worker loaded more than its own thread")
+                    if {first_record.thread_id, second_record.thread_id} & set(control_loaded.get("data") or []):
+                        raise RuntimeError("control App Server loaded a Faryo Web thread")
+
+                    cli_output = runtime_root / "ordinary-cli-final.txt"
+                    cli_result = subprocess.run(
+                        codex_runtime.codex_argv(
+                            executable,
+                            "exec",
+                            "--skip-git-repo-check",
+                            "--ignore-user-config",
+                            "--ignore-rules",
+                            "--sandbox",
+                            "read-only",
+                            "--output-last-message",
+                            str(cli_output),
+                            ISOLATION_CLI_PROMPT,
+                        ),
+                        cwd=workspace,
+                        env=environment,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=max(30.0, args.timeout),
+                        check=False,
+                    )
+                    cli_final = cli_output.read_text(encoding="utf-8") if cli_output.is_file() else ""
+                    if cli_result.returncode or cli_final.strip() != "ORDINARY_CODEX_CLI_OK":
+                        raise RuntimeError("ordinary Codex CLI failed while App Server workers were active")
+
+                    conflict_started = time.monotonic()
+                    try:
+                        runtime._submit(
+                            control_client.rpc(
+                                "thread/resume",
+                                {"threadId": first_record.thread_id},
+                                timeout=3.0,
+                                overload_attempts=1,
+                            ),
+                            4,
+                        )
+                    except Exception:
+                        conflict_elapsed = time.monotonic() - conflict_started
+                    else:
+                        raise RuntimeError("a second App Server writer unexpectedly resumed the same thread")
+                    if conflict_elapsed >= 4:
+                        raise RuntimeError("same-thread writer conflict did not fail quickly")
+
+                    first_generation = first_record.worker_generation
+                    second_generation = second_record.worker_generation
+                    second_pid = worker_manager.pid(second_record.worker_id)
+                    worker_manager.crash(first_record.worker_id)
+                    recovery_deadline = time.monotonic() + 20
+                    while time.monotonic() < recovery_deadline:
+                        recovered_record = runtime.registry.get(session)
+                        if (
+                            recovered_record is not None
+                            and recovered_record.worker_generation > first_generation
+                            and recovered_record.worker_state == "ready"
+                        ):
+                            break
+                        time.sleep(0.05)
+                    else:
+                        raise RuntimeError("crashed real worker did not recover independently")
+                    second_after = runtime.registry.get(second_session)
+                    if second_after is None or second_after.worker_generation != second_generation:
+                        raise RuntimeError("peer worker generation changed during isolated recovery")
+                    if runtime._require_session_client(second_session) is not second_client:
+                        raise RuntimeError("peer worker client changed during isolated recovery")
+                    if worker_manager.pid(second_record.worker_id) != second_pid:
+                        raise RuntimeError("peer worker process changed during isolated recovery")
+
+                    runtime.send(
+                        second_session,
+                        ISOLATION_SECOND_AFTER_CRASH_PROMPT,
+                        "real_appserver_isolation_second_after_crash",
+                    )
+                    second_final = wait_for_final_marker(
+                        runtime,
+                        second_session,
+                        "SECOND_WORKER_UNAFFECTED",
+                        max(30.0, args.timeout),
+                    )
+                    runtime.send(
+                        session,
+                        ISOLATION_FIRST_RECOVERY_PROMPT,
+                        "real_appserver_isolation_first_recovered",
+                    )
+                    first_final = wait_for_final_marker(
+                        runtime,
+                        session,
+                        "FIRST_WORKER_RECOVERED",
+                        max(30.0, args.timeout),
+                    )
+                    if "SECOND_WORKER_UNAFFECTED" not in second_final or "FIRST_WORKER_RECOVERED" not in first_final:
+                        raise RuntimeError("real isolation final responses did not converge")
+                    runtime.close_session(second_session)
+                    print(
+                        "real-appserver-isolation=PASS "
+                        "control=read-only writers=one-per-worker cli=new-thread conflict=fast "
+                        "crash=isolated peer_pid=stable recovery=same-thread"
+                    )
                 if args.interactions:
                     runtime.send(
                         session,
