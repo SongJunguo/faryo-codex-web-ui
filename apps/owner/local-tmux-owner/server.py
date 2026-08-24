@@ -169,9 +169,6 @@ APP_SERVER_REGISTRY = Path(
         str(FARYO_OWNER_DATA.parent / "state/appserver-sessions.json"),
     )
 ).expanduser()
-APP_SERVER_SERVICE_UNIT = os.environ.get("FARYO_CODEX_APP_SERVER_UNIT", "").strip()
-APP_SERVER_RECYCLE_TIMEOUT = 20.0
-APP_SERVER_WRITER_RELEASE_TIMEOUT = 5.0
 COMMAND_TIMELINE_PATH = Path(
     os.environ.get(
         "FARYO_COMMAND_TIMELINE",
@@ -1223,29 +1220,6 @@ def ensure_codex_thread_writer_available(thread_id: str) -> str:
     return probe.state
 
 
-def recycle_codex_app_server_service(thread_id: str) -> bool:
-    """Release the final closed Web writer by restarting its dedicated service."""
-
-    unit = APP_SERVER_SERVICE_UNIT
-    if not re.fullmatch(r"[A-Za-z0-9_.@:-]+\.service", unit):
-        return False
-    try:
-        result = run_cmd(
-            ["systemctl", "--user", "restart", unit],
-            timeout=APP_SERVER_RECYCLE_TIMEOUT,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if result.returncode != 0:
-        return False
-    deadline = time.monotonic() + APP_SERVER_WRITER_RELEASE_TIMEOUT
-    while time.monotonic() < deadline:
-        if codex_writer_guard.probe_thread_writer(thread_id).available:
-            return True
-        time.sleep(0.05)
-    return False
-
-
 def codex_app_server_request(method: str, params: dict[str, Any], timeout: float = 2.5) -> dict[str, Any] | None:
     response = codex_app_server_rpc(method, params, timeout)
     result = response.get("result") if response.get("ok") else None
@@ -1976,6 +1950,7 @@ def web_status_payload(runtime: appserver_runtime.AppServerRuntime, session: str
     record = state.get("record") or {}
     snapshot = state.get("snapshot") or {}
     lifecycle = str(snapshot.get("lifecycle") or "loading")
+    worker_state = str(record.get("workerState") or "ready")
     running = bool(capture.get("agentRunning"))
     agent_state = {
         "idle": "waiting",
@@ -1983,13 +1958,19 @@ def web_status_payload(runtime: appserver_runtime.AppServerRuntime, session: str
         "unloaded": "exited",
         "failed": "exited",
     }.get(lifecycle, "pending_interaction" if lifecycle.startswith("waiting_for_") else lifecycle)
+    if worker_state in {"starting", "reconnecting", "unknown"}:
+        agent_state = "starting"
+        running = False
+    elif worker_state in {"degraded", "stopping", "exited"}:
+        agent_state = "exited"
+        running = False
     cwd = str(record.get("cwd") or "")
     thread = snapshot.get("thread") if isinstance(snapshot.get("thread"), dict) else {}
     model = str(record.get("model") or thread.get("model") or "Codex")
     return {
         "ok": True,
         "tmuxAlive": False,
-        "targetAlive": True,
+        "targetAlive": worker_state == "ready",
         "releaseVersion": release_version(),
         "session": session,
         "ownerLabel": owner_label(),
@@ -2011,12 +1992,19 @@ def web_status_payload(runtime: appserver_runtime.AppServerRuntime, session: str
         "weeklyRateLimit": rate_limit_from_response(snapshot.get("rateLimits") or {}),
         "agentRunning": running,
         "agentState": agent_state,
-        "launchError": "" if runtime.ready() else "Codex App Server is reconnecting.",
+        "launchError": (
+            ""
+            if worker_state == "ready"
+            else "This Codex App Server worker is reconnecting."
+            if worker_state in {"starting", "reconnecting", "unknown"}
+            else "This Codex App Server worker needs recovery."
+        ),
         "queuedSendNowAvailable": False,
         "paneCommand": None,
         "agentSource": "codex-app-server",
         "agentProfile": "codex",
         "backend": session_backend.APP_SERVER.value,
+        "appServerWorkerState": worker_state,
         "updatedAt": now_iso(),
     }
 
@@ -2037,12 +2025,17 @@ def web_agent_session_items(
         except appserver_runtime.AppServerRuntimeError:
             snapshot = {}
         lifecycle = str(snapshot.get("lifecycle") or "loading")
+        worker_state = str(record.get("workerState") or "ready")
         state = {
             "idle": "waiting",
             "loading": "starting",
             "unloaded": "exited",
             "failed": "exited",
         }.get(lifecycle, "pending_interaction" if lifecycle.startswith("waiting_for_") else lifecycle)
+        if worker_state in {"starting", "reconnecting", "unknown"}:
+            state = "starting"
+        elif worker_state in {"degraded", "stopping", "exited"}:
+            state = "exited"
         updated_ts = int(record.get("updatedAt") or 0)
         items.append({
             "id": record.get("threadId"),
@@ -2059,10 +2052,11 @@ def web_agent_session_items(
             "tmuxSession": session,
             "active": True,
             "managed": True,
-            "agentRunning": lifecycle in {"running", "waiting_for_approval", "waiting_for_input"},
+            "agentRunning": worker_state == "ready" and lifecycle in {"running", "waiting_for_approval", "waiting_for_input"},
             "state": state,
             "archived": False,
             "backend": session_backend.APP_SERVER.value,
+            "appServerWorkerState": worker_state,
         })
     return items
 

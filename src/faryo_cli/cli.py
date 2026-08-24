@@ -14,6 +14,7 @@ from faryo_cli.maintenance import rollback_application, uninstall_application
 from faryo_cli.operations import OperationError, journal, open_gateway, service_operation
 from faryo_cli.runtime import (
     appserver_process,
+    appserver_worker_process,
     appserver_socket_path,
     exec_process,
     gateway_process,
@@ -65,6 +66,8 @@ def parser() -> argparse.ArgumentParser:
     internal_commands.add_parser("run-owner")
     internal_commands.add_parser("run-gateway")
     internal_commands.add_parser("run-appserver")
+    worker = internal_commands.add_parser("run-appserver-worker")
+    worker.add_argument("worker_id")
     return root
 
 
@@ -97,6 +100,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 spec = owner_process()
             elif arguments.internal_command == "run-gateway":
                 spec = gateway_process()
+            elif arguments.internal_command == "run-appserver-worker":
+                spec = appserver_worker_process(arguments.worker_id)
             else:
                 layout = Layout.from_environment()
                 spec = appserver_process(layout)

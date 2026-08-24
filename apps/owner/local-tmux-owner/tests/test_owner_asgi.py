@@ -76,7 +76,7 @@ class FakeRuntime:
             "session": name,
             "threadId": "thread_demo",
             "interrupted": interrupt,
-            "writerRelease": "delayed",
+            "writerRelease": "immediate",
         }
 
     def start_session(self, **_values):
@@ -405,20 +405,18 @@ class OwnerAsgiTest(unittest.TestCase):
         self.assertIn("another Codex client", json.loads(body)["error"])
         writer_guard.assert_called_once_with("thread_external_writer")
 
-    def test_last_app_server_close_recycles_writer_service(self) -> None:
+    def test_app_server_close_uses_its_session_worker_release(self) -> None:
         self.runtime.sessions.add("faryo1")
-        with mock.patch.object(server, "recycle_codex_app_server_service", return_value=True) as recycle:
-            status, _headers, body = self.request(
-                "POST",
-                "/api/session/close",
-                {"session": "faryo1"},
-                token=True,
-            )
+        status, _headers, body = self.request(
+            "POST",
+            "/api/session/close",
+            {"session": "faryo1"},
+            token=True,
+        )
 
         payload = json.loads(body)
         self.assertEqual(status, 200, body)
         self.assertEqual(payload["writerRelease"], "immediate")
-        recycle.assert_called_once_with("thread_demo")
 
     def test_active_app_server_history_keeps_app_server_question_identity(self) -> None:
         self.runtime.sessions.add("faryo1")

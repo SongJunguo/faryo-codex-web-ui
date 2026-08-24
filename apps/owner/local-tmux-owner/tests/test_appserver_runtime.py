@@ -13,6 +13,7 @@ if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
 from appserver_registry import WebSessionRegistry
+from appserver_protocol import AppServerUnavailable
 from appserver_runtime import AppServerRuntime
 
 
@@ -29,6 +30,7 @@ class FakeRuntimeClient:
         self.turn_start_calls = 0
         self.turn_steer_calls = 0
         self.rpc_calls = []
+        self.label = ""
 
     def register_server_request(self, method, handler):
         self.server_handlers[method] = handler
@@ -40,7 +42,7 @@ class FakeRuntimeClient:
     async def close(self):
         self.ready = False
 
-    async def rpc(self, method, params):
+    async def rpc(self, method, params, **_options):
         self.rpc_calls.append((method, dict(params)))
         if method == "account/rateLimits/read":
             return {
@@ -67,6 +69,8 @@ class FakeRuntimeClient:
                 ],
                 "nextCursor": None,
             }
+        if method == "server/diagnostics":
+            return {"process": {"residentMemoryBytes": 1}, "gauges": []}
         if method == "thread/settings/update":
             await self.notification(
                 "thread/settings/updated",
@@ -91,9 +95,10 @@ class FakeRuntimeClient:
             return {"goal": None}
         if method == "thread/start":
             self.thread_number += 1
+            thread_id = f"thread_{self.label}_{self.thread_number}" if self.label else f"thread_{self.thread_number}"
             return {
                 "thread": {
-                    "id": f"thread_{self.thread_number}",
+                    "id": thread_id,
                     "turns": [],
                     "status": "idle",
                     "model": "model-a",
@@ -199,6 +204,31 @@ class FakeRuntimeClient:
         raise AssertionError(f"unexpected method: {method}")
 
 
+class TrackingWorkerManager:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.started: list[str] = []
+        self.restarted: list[str] = []
+        self.stopped: list[str] = []
+
+    def socket_path(self, worker_id: str) -> Path:
+        return self.root / f"{worker_id}.sock"
+
+    def start(self, worker_id: str, *, timeout: float = 12.0) -> Path:
+        del timeout
+        self.started.append(worker_id)
+        return self.socket_path(worker_id)
+
+    def restart(self, worker_id: str, *, timeout: float = 12.0) -> Path:
+        del timeout
+        self.restarted.append(worker_id)
+        return self.socket_path(worker_id)
+
+    def stop(self, worker_id: str, *, timeout: float = 12.0) -> None:
+        del timeout
+        self.stopped.append(worker_id)
+
+
 class RegistryTest(unittest.TestCase):
     def test_registry_is_private_body_free_and_skips_reserved_tmux_names(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -219,6 +249,29 @@ class RegistryTest(unittest.TestCase):
             self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
             self.assertNotIn("prompt", body.lower())
             self.assertEqual(loaded.get("faryo3").thread_id, "thread_demo")
+            self.assertRegex(loaded.get("faryo3").worker_id, r"^[a-f0-9]{24}$")
+            self.assertNotIn(loaded.get("faryo3").worker_id, repr(loaded.get("faryo3").public()))
+
+    def test_registry_migrates_v1_records_to_opaque_worker_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "private/registry.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(
+                '{"schemaVersion":1,"sessions":['
+                '{"name":"faryo1","thread_id":"thread_a","cwd":"/workspace/a"},'
+                '{"name":"faryo2","thread_id":"thread_b","cwd":"/workspace/b"}'
+                ']}\n',
+                encoding="utf-8",
+            )
+
+            registry = WebSessionRegistry(path)
+            migrated = path.read_text(encoding="utf-8")
+
+        workers = [record.worker_id for record in registry.values()]
+        self.assertEqual(len(workers), 2)
+        self.assertEqual(len(set(workers)), 2)
+        self.assertTrue(all(len(worker) == 24 for worker in workers))
+        self.assertIn('"schemaVersion":2', migrated)
 
 
 class RuntimeTest(unittest.TestCase):
@@ -321,9 +374,408 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(delta_events[0].payload["textLength"], len("Answer $x^2$."))
         self.assertNotIn("Answer", repr([event.payload for event in replay.events]))
         self.assertEqual(status["pendingRpcCount"], 0)
-        self.assertEqual(len(clients), 1)
+        self.assertEqual(len(clients), 3)
+        self.assertFalse(any(method in {"thread/start", "thread/resume"} for method, _params in clients[0].rpc_calls))
+        self.assertTrue(any(method == "thread/start" for method, _params in clients[1].rpc_calls))
+        self.assertTrue(any(method == "thread/resume" for method, _params in clients[2].rpc_calls))
         self.assertTrue(lifecycle["ok"])
         self.assertEqual(lifecycle["result"]["threadId"], started["threadId"])
+
+    def test_blocked_worker_does_not_delay_another_session(self) -> None:
+        blocked_started = threading.Event()
+        release_blocked = threading.Event()
+        clients = []
+
+        class BlockingRuntimeClient(FakeRuntimeClient):
+            async def rpc(self, method, params, **options):
+                if method == "turn/start" and params["input"][0]["text"] == "Block forever":
+                    self.turn_start_calls += 1
+                    blocked_started.set()
+                    while not release_blocked.is_set():
+                        await asyncio.sleep(0.01)
+                    return await super().rpc(method, params, **options)
+                return await super().rpc(method, params, **options)
+
+        def factory(notification, disconnected):
+            client = BlockingRuntimeClient(notification, disconnected)
+            client.label = str(len(clients))
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = AppServerRuntime(
+                socket_path=root / "app.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            first = runtime.start_session(cwd="/workspace/a", launch_id="launch_worker_a")["session"]
+            second = runtime.start_session(cwd="/workspace/b", launch_id="launch_worker_b")["session"]
+
+            first_receipt = runtime.send(first, "Block forever", "client_worker_a_block")
+            self.assertTrue(blocked_started.wait(1))
+            started_at = time.monotonic()
+            second_receipt = runtime.send(second, "Independent", "client_worker_b_send")
+            second_elapsed = time.monotonic() - started_at
+            second_capture = runtime.capture(second)
+            workers = [record.worker_id for record in runtime.registry.values()]
+
+            release_blocked.set()
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                settled = runtime.send(first, "Block forever", "client_worker_a_block")
+                if settled["deliveryState"] == "submitted":
+                    break
+                time.sleep(0.01)
+            runtime.stop()
+
+        self.assertEqual(first_receipt["deliveryState"], "submitting")
+        self.assertEqual(second_receipt["deliveryState"], "submitted")
+        self.assertLess(second_elapsed, 0.25)
+        self.assertEqual(second_capture["messages"][-1], ("assistant", "Answer $x^2$."))
+        self.assertEqual(len(set(workers)), 2)
+        self.assertEqual(clients[1].turn_start_calls, 2)
+        self.assertEqual(clients[2].turn_start_calls, 1)
+
+    def test_worker_disconnect_replaces_only_that_session_generation(self) -> None:
+        clients = []
+
+        def factory(notification, disconnected):
+            client = FakeRuntimeClient(notification, disconnected)
+            client.label = str(len(clients))
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = AppServerRuntime(
+                socket_path=root / "app.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            first = runtime.start_session(cwd="/workspace/a", launch_id="launch_reconnect_a")["session"]
+            second = runtime.start_session(cwd="/workspace/b", launch_id="launch_reconnect_b")["session"]
+            first_before = runtime.registry.get(first).worker_generation
+            second_before = runtime.registry.get(second).worker_generation
+            second_client = runtime.session_clients[second]
+            failed_client = runtime.session_clients[first]
+
+            future = asyncio.run_coroutine_threadsafe(
+                failed_client.disconnected(RuntimeError("fixture disconnect")),
+                runtime.loop,
+            )
+            future.result(1)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if (
+                    runtime.registry.get(first).worker_state == "ready"
+                    and runtime.registry.get(first).worker_generation > first_before
+                ):
+                    break
+                time.sleep(0.01)
+            first_after = runtime.registry.get(first)
+            second_after = runtime.registry.get(second)
+            first_replaced = runtime.session_clients[first] is not failed_client
+            second_unchanged = runtime.session_clients[second] is second_client
+            runtime.stop()
+
+        self.assertGreater(first_after.worker_generation, first_before)
+        self.assertEqual(second_after.worker_generation, second_before)
+        self.assertTrue(first_replaced)
+        self.assertTrue(second_unchanged)
+
+    def test_timed_out_rpc_restarts_only_its_worker_and_fences_late_events(self) -> None:
+        clients = []
+
+        class TimeoutRuntimeClient(FakeRuntimeClient):
+            async def rpc(self, method, params, **options):
+                if method == "turn/start":
+                    raise AppServerUnavailable("Codex App Server request timed out: turn/start")
+                return await super().rpc(method, params, **options)
+
+        def factory(notification, disconnected):
+            client = (
+                TimeoutRuntimeClient(notification, disconnected)
+                if len(clients) == 1
+                else FakeRuntimeClient(notification, disconnected)
+            )
+            client.label = str(len(clients))
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = TrackingWorkerManager(root / "workers")
+            runtime = AppServerRuntime(
+                socket_path=root / "control.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+                worker_manager=manager,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            first = runtime.start_session(cwd="/workspace/a", launch_id="launch_timeout_a")["session"]
+            second = runtime.start_session(cwd="/workspace/b", launch_id="launch_timeout_b")["session"]
+            first_record = runtime.registry.get(first)
+            second_record = runtime.registry.get(second)
+            first_generation = first_record.worker_generation
+            second_generation = second_record.worker_generation
+            old_client = runtime.session_clients[first]
+            second_client = runtime.session_clients[second]
+
+            with self.assertRaisesRegex(RuntimeError, "timed out"):
+                runtime.send(first, "Ambiguous", "client_timeout_same_id")
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if runtime.registry.get(first).worker_generation > first_generation:
+                    break
+                time.sleep(0.01)
+            recovered = runtime.send(first, "Ambiguous", "client_timeout_same_id")
+            unaffected = runtime.send(second, "Unaffected", "client_timeout_other")
+            before_messages = list(runtime.capture(first)["messages"])
+            late = asyncio.run_coroutine_threadsafe(
+                old_client.notification(
+                    "item/completed",
+                    {
+                        "threadId": first_record.thread_id,
+                        "turnId": "late_turn",
+                        "item": {"id": "late_item", "type": "agentMessage", "text": "late stale output"},
+                    },
+                ),
+                runtime.loop,
+            )
+            late.result(1)
+            after_messages = runtime.capture(first)["messages"]
+            first_after = runtime.registry.get(first)
+            second_after = runtime.registry.get(second)
+            second_unchanged = runtime.session_clients[second] is second_client
+            ignored = runtime.status()["ignoredNotificationCount"]
+            runtime.stop()
+
+        self.assertEqual(recovered["deliveryState"], "submitted")
+        self.assertEqual(unaffected["deliveryState"], "submitted")
+        self.assertEqual(manager.restarted, [first_record.worker_id])
+        self.assertGreater(first_after.worker_generation, first_generation)
+        self.assertEqual(second_after.worker_generation, second_generation)
+        self.assertTrue(second_unchanged)
+        self.assertEqual(after_messages, before_messages)
+        self.assertGreaterEqual(ignored, 1)
+
+    def test_interrupt_timeout_force_recovers_only_the_active_worker(self) -> None:
+        clients = []
+
+        class InterruptTimeoutClient(FakeRuntimeClient):
+            async def rpc(self, method, params, **options):
+                if method == "turn/interrupt":
+                    raise AppServerUnavailable("Codex App Server request timed out: turn/interrupt")
+                return await super().rpc(method, params, **options)
+
+        def factory(notification, disconnected):
+            client = (
+                InterruptTimeoutClient(notification, disconnected)
+                if len(clients) == 1
+                else FakeRuntimeClient(notification, disconnected)
+            )
+            client.label = str(len(clients))
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = TrackingWorkerManager(root / "workers")
+            runtime = AppServerRuntime(
+                socket_path=root / "control.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+                worker_manager=manager,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            first = runtime.start_session(cwd="/workspace/a", launch_id="launch_interrupt_a")["session"]
+            second = runtime.start_session(cwd="/workspace/b", launch_id="launch_interrupt_b")["session"]
+            first_record = runtime.registry.get(first)
+            second_record = runtime.registry.get(second)
+            first_generation = first_record.worker_generation
+            second_generation_before = second_record.worker_generation
+            second_client = runtime.session_clients[second]
+            actor = runtime.actors[first]
+            runtime.loop.call_soon_threadsafe(
+                actor.apply,
+                "turn/started",
+                {
+                    "threadId": first_record.thread_id,
+                    "turn": {"id": "turn_hung", "items": [], "status": "inProgress"},
+                },
+            )
+            deadline = time.monotonic() + 1
+            while runtime.capture(first)["snapshot"]["activeTurnId"] != "turn_hung":
+                if time.monotonic() >= deadline:
+                    raise AssertionError("active turn did not settle")
+                time.sleep(0.01)
+
+            started_at = time.monotonic()
+            interrupted = runtime.interrupt(first)
+            elapsed = time.monotonic() - started_at
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if runtime.registry.get(first).worker_generation > first_generation:
+                    break
+                time.sleep(0.01)
+            next_turn = runtime.send(first, "After recovery", "client_after_forced_recovery")
+            other_turn = runtime.send(second, "Still healthy", "client_healthy_during_recovery")
+            second_unchanged = runtime.session_clients[second] is second_client
+            second_generation = runtime.registry.get(second).worker_generation
+            runtime.stop()
+
+        self.assertTrue(interrupted["forcedRecovery"])
+        self.assertFalse(interrupted["settled"])
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(manager.restarted, [first_record.worker_id])
+        self.assertEqual(next_turn["deliveryState"], "submitted")
+        self.assertEqual(other_turn["deliveryState"], "submitted")
+        self.assertTrue(second_unchanged)
+        self.assertEqual(second_generation, second_generation_before)
+
+    def test_silent_worker_probe_requires_two_failures_and_isolates_recovery(self) -> None:
+        clients = []
+
+        class ProbeTimeoutClient(FakeRuntimeClient):
+            async def rpc(self, method, params, **options):
+                if method == "server/diagnostics":
+                    raise AppServerUnavailable("Codex App Server request timed out: server/diagnostics")
+                return await super().rpc(method, params, **options)
+
+        def factory(notification, disconnected):
+            client = (
+                ProbeTimeoutClient(notification, disconnected)
+                if len(clients) == 1
+                else FakeRuntimeClient(notification, disconnected)
+            )
+            client.label = str(len(clients))
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = TrackingWorkerManager(root / "workers")
+            runtime = AppServerRuntime(
+                socket_path=root / "control.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+                worker_manager=manager,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            first = runtime.start_session(cwd="/workspace/a", launch_id="launch_probe_a")["session"]
+            second = runtime.start_session(cwd="/workspace/b", launch_id="launch_probe_b")["session"]
+            first_record = runtime.registry.get(first)
+            first_generation = first_record.worker_generation
+            second_generation = runtime.registry.get(second).worker_generation
+            second_client = runtime.session_clients[second]
+            for name, turn_id in ((first, "turn_probe_a"), (second, "turn_probe_b")):
+                actor = runtime.actors[name]
+                record = runtime.registry.get(name)
+                runtime.loop.call_soon_threadsafe(
+                    actor.apply,
+                    "turn/started",
+                    {
+                        "threadId": record.thread_id,
+                        "turn": {"id": turn_id, "items": [], "status": "inProgress"},
+                    },
+                )
+            deadline = time.monotonic() + 1
+            while not all(runtime.capture(name)["snapshot"]["activeTurnId"] for name in (first, second)):
+                if time.monotonic() >= deadline:
+                    raise AssertionError("probe turns did not settle")
+                time.sleep(0.01)
+
+            first_probe = asyncio.run_coroutine_threadsafe(
+                runtime.session_supervisor.probe_once(force=True),
+                runtime.loop,
+            )
+            first_probe.result(1)
+            state_after_first = runtime.registry.get(first).worker_state
+            restarts_after_first = list(manager.restarted)
+            second_probe = asyncio.run_coroutine_threadsafe(
+                runtime.session_supervisor.probe_once(force=True),
+                runtime.loop,
+            )
+            second_probe.result(1)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if runtime.registry.get(first).worker_generation > first_generation:
+                    break
+                time.sleep(0.01)
+            first_after = runtime.registry.get(first)
+            second_after = runtime.registry.get(second)
+            second_unchanged = runtime.session_clients[second] is second_client
+            runtime.stop()
+
+        self.assertEqual(state_after_first, "degraded")
+        self.assertEqual(restarts_after_first, [])
+        self.assertEqual(manager.restarted, [first_record.worker_id])
+        self.assertGreater(first_after.worker_generation, first_generation)
+        self.assertEqual(second_after.worker_generation, second_generation)
+        self.assertTrue(second_unchanged)
+
+    def test_control_plane_reconnect_does_not_reconnect_healthy_session_workers(self) -> None:
+        clients = []
+
+        def factory(notification, disconnected):
+            client = FakeRuntimeClient(notification, disconnected)
+            client.label = str(len(clients))
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manager = TrackingWorkerManager(root / "workers")
+            runtime = AppServerRuntime(
+                socket_path=root / "control.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+                worker_manager=manager,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            session = runtime.start_session(cwd="/workspace", launch_id="launch_control_reconnect")["session"]
+            session_client = runtime.session_clients[session]
+            generation = runtime.registry.get(session).worker_generation
+            starts = list(manager.started)
+            disconnected = asyncio.run_coroutine_threadsafe(
+                clients[0].disconnected(AppServerUnavailable("control transport closed")),
+                runtime.loop,
+            )
+            disconnected.result(1)
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                if runtime.status()["ready"] and runtime.status()["reconnectCount"] >= 1:
+                    break
+                time.sleep(0.01)
+            status = runtime.status()
+            same_client = runtime.session_clients[session] is session_client
+            same_generation = runtime.registry.get(session).worker_generation
+            runtime.stop()
+
+        self.assertTrue(status["ready"])
+        self.assertEqual(status["reconnectCount"], 1)
+        self.assertTrue(same_client)
+        self.assertEqual(same_generation, generation)
+        self.assertEqual(manager.started, starts)
+        self.assertEqual(
+            [method for method, _params in clients[0].rpc_calls if method in {"thread/start", "thread/resume"}],
+            [],
+        )
 
     def test_active_turn_send_steers_and_explicit_close_interrupts(self) -> None:
         clients = []
@@ -367,12 +819,12 @@ class RuntimeTest(unittest.TestCase):
 
         self.assertEqual(steered["deliveryState"], "steered")
         self.assertEqual(steered["turnId"], "turn_active")
-        self.assertEqual(clients[0].turn_start_calls, 0)
-        self.assertEqual(clients[0].turn_steer_calls, 1)
+        self.assertEqual(clients[1].turn_start_calls, 0)
+        self.assertEqual(clients[1].turn_steer_calls, 1)
         self.assertTrue(closed["closed"])
         self.assertTrue(closed["interrupted"])
         self.assertEqual(closed["unsubscribeStatus"], "unsubscribed")
-        self.assertEqual(closed["writerRelease"], "delayed")
+        self.assertEqual(closed["writerRelease"], "immediate")
 
     def test_runtime_reassigns_persisted_names_that_now_belong_to_tmux(self) -> None:
         clients = []
@@ -445,7 +897,7 @@ class RuntimeTest(unittest.TestCase):
             approval_thread.join(2)
             self.assertFalse(approval_thread.is_alive())
             self.assertTrue(response["resolved"])
-            self.assertEqual(clients[0].server_results[-1], {"decision": "accept"})
+            self.assertEqual(clients[1].server_results[-1], {"decision": "accept"})
 
             question_thread = threading.Thread(
                 target=lambda: runtime.send(session, "Question please", "client_question"),
@@ -462,7 +914,7 @@ class RuntimeTest(unittest.TestCase):
             question_thread.join(2)
             self.assertFalse(question_thread.is_alive())
             self.assertEqual(
-                clients[0].server_results[-1],
+                clients[1].server_results[-1],
                 {"answers": {"choice": {"answers": ["Alpha"]}}},
             )
             self.assertIsNone(runtime.capture(session)["snapshot"]["interaction"])
@@ -502,7 +954,7 @@ class RuntimeTest(unittest.TestCase):
             runtime.stop()
 
         self.assertTrue(all(not worker.is_alive() for worker in workers))
-        self.assertEqual(clients[0].turn_start_calls, 1)
+        self.assertEqual(clients[1].turn_start_calls, 1)
         self.assertEqual(len(results), 2)
         self.assertEqual(sum(bool(result["duplicate"]) for result in results), 1)
         self.assertTrue(duplicate_after["duplicate"])
@@ -546,7 +998,7 @@ class RuntimeTest(unittest.TestCase):
         self.assertTrue(duplicate["duplicate"])
         self.assertEqual(settled["deliveryState"], "submitted")
         self.assertTrue(settled["duplicate"])
-        self.assertEqual(clients[0].turn_start_calls, 1)
+        self.assertEqual(clients[1].turn_start_calls, 1)
 
     def test_web_commands_use_app_server_apis_instead_of_terminal_menus(self) -> None:
         clients = []
@@ -607,7 +1059,7 @@ class RuntimeTest(unittest.TestCase):
             events = runtime.capture(session)["commandEvents"]
             runtime.stop()
 
-        settings_calls = [params for method, params in clients[0].rpc_calls if method == "thread/settings/update"]
+        settings_calls = [params for method, params in clients[1].rpc_calls if method == "thread/settings/update"]
         self.assertTrue(any(params.get("model") == "model-b" for params in settings_calls))
         self.assertEqual(sum(params.get("serviceTier") == "fast" for params in settings_calls), 1)
         self.assertEqual([event["name"] for event in events], ["/model", "/fast"])

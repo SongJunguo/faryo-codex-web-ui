@@ -135,6 +135,8 @@ def wait_for_appserver(layout: Layout, timeout: float = 12.0) -> None:
 
 
 def service_operation(action: ServiceAction, layout: Layout | None = None) -> str:
+    from faryo_cli.appserver_workers import listed_worker_units
+
     selected = layout or Layout.from_environment()
     direct_owner = unit_exists("faryo-owner.service")
     if action == "stop":
@@ -144,6 +146,9 @@ def service_operation(action: ServiceAction, layout: Layout | None = None) -> st
             control_service("faryo-owner.service", "stop")
         else:
             run_legacy_owner(selected, "stop")
+        workers = listed_worker_units(systemctl)
+        if workers:
+            systemctl("stop", *workers, check=False)
         if unit_exists("faryo-appserver.service"):
             control_service("faryo-appserver.service", "stop")
         return "stopped"

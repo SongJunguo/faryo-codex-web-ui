@@ -21,7 +21,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from faryo_cli import application, cli, codex_runtime, diagnostics, installer, maintenance, migration, operations, runtime, updates
+from faryo_cli import appserver_workers, application, cli, codex_runtime, diagnostics, installer, maintenance, migration, operations, runtime, updates
 
 
 class FaryoCliTest(unittest.TestCase):
@@ -70,6 +70,7 @@ class FaryoCliTest(unittest.TestCase):
             mock.patch.object(diagnostics, "resolve_codex", return_value="/fixture/codex"),
             mock.patch.object(diagnostics, "argv_version", return_value="codex-cli 0.test"),
             mock.patch.object(diagnostics, "systemd_user_available", return_value=True),
+            mock.patch.object(diagnostics, "appserver_worker_service_counts", return_value=(0, 0, 0)),
             mock.patch.object(diagnostics, "service_state", side_effect=state),
             mock.patch.object(diagnostics, "http_status", side_effect=lambda _host, port, _path: 200 if port in {8765, 8780} else None),
             mock.patch.object(diagnostics, "tmux_session_exists", return_value=True),
@@ -100,6 +101,25 @@ class FaryoCliTest(unittest.TestCase):
         self.assertFalse(report["ok"])
         failed = {item["id"] for item in report["checks"] if item["status"] == "error"}
         self.assertTrue({"owner-config", "gateway-config", "gateway-auth"}.issubset(failed))
+
+    def test_worker_diagnostics_count_only_valid_faryo_instances(self) -> None:
+        output = (
+            f"faryo-appserver-worker@{'a' * 24}.service loaded active running Worker A\n"
+            f"faryo-appserver-worker@{'b' * 24}.service loaded failed failed Worker B\n"
+            "faryo-owner.service loaded active running Owner\n"
+            "faryo-appserver-worker@../../bad.service loaded active running Invalid\n"
+        )
+        with (
+            mock.patch.object(diagnostics.shutil, "which", return_value="/usr/bin/systemctl"),
+            mock.patch.object(
+                diagnostics,
+                "run_command",
+                return_value=subprocess.CompletedProcess(["systemctl"], 0, output, ""),
+            ),
+        ):
+            counts = diagnostics.appserver_worker_service_counts()
+
+        self.assertEqual(counts, (2, 1, 1))
 
     def test_cli_json_and_human_output_have_stable_exit_codes(self) -> None:
         report = {
@@ -282,6 +302,11 @@ class FaryoCliTest(unittest.TestCase):
             with (
                 mock.patch.object(operations, "unit_exists", return_value=True),
                 mock.patch.object(operations, "control_service", side_effect=lambda name, action: actions.append((name, action))),
+                mock.patch.object(
+                    operations,
+                    "systemctl",
+                    return_value=subprocess.CompletedProcess(["systemctl"], 0, "", ""),
+                ),
                 mock.patch.object(operations, "run_legacy_owner") as legacy,
             ):
                 result = operations.service_operation("stop", layout)
@@ -373,6 +398,32 @@ class FaryoCliTest(unittest.TestCase):
             with self.assertRaisesRegex(operations.OperationError, "must remain"):
                 runtime.appserver_socket_path(layout, values)
 
+    def test_appserver_worker_spec_uses_one_validated_private_socket(self) -> None:
+        worker_id = "a" * 24
+        with tempfile.TemporaryDirectory() as temp:
+            layout = self.layout(Path(temp))
+            with (
+                mock.patch.object(codex_runtime, "resolve_codex", return_value="/runtime/bin/codex"),
+                mock.patch.object(
+                    codex_runtime,
+                    "codex_argv",
+                    side_effect=lambda executable, *args: [executable, *args],
+                ),
+            ):
+                spec = runtime.appserver_worker_process(worker_id, layout)
+            socket_path = appserver_workers.worker_socket_path(layout, worker_id)
+
+        self.assertEqual(spec.argv[-2:], ["--listen", f"unix://{socket_path}"])
+        self.assertEqual(socket_path.name, f"{worker_id}.sock")
+        self.assertNotIn("private-owner-token", " ".join(spec.argv))
+        self.assertFalse(any(name.startswith(("FARYO_", "GATEWAY_")) for name in spec.environment))
+
+    def test_appserver_worker_spec_rejects_unit_name_injection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            layout = self.layout(Path(temp))
+            with self.assertRaisesRegex(operations.OperationError, "worker id is invalid"):
+                runtime.appserver_worker_process("../faryo-owner", layout)
+
     def test_direct_runtime_rejects_non_loopback_owner(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             layout = self.layout(Path(temp))
@@ -409,11 +460,24 @@ class FaryoCliTest(unittest.TestCase):
         prepare.assert_called_once_with(layout, socket)
         execute.assert_called_once_with(spec)
 
+    def test_internal_worker_command_executes_only_validated_spec(self) -> None:
+        spec = runtime.ProcessSpec(["codex", "app-server"], ROOT, {})
+        worker_id = "b" * 24
+        with (
+            mock.patch.object(cli, "appserver_worker_process", return_value=spec) as worker_process,
+            mock.patch.object(cli, "exec_process") as execute,
+        ):
+            code = cli.main(["internal", "run-appserver-worker", worker_id])
+        self.assertEqual(code, 0)
+        worker_process.assert_called_once_with(worker_id)
+        execute.assert_called_once_with(spec)
+
     def test_service_units_use_unified_cli_and_no_legacy_owner_wrapper(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             layout = self.layout(Path(temp))
             owner = installer.rendered_unit("owner", layout, sys.executable)
             gateway = installer.rendered_unit("gateway", layout, sys.executable)
+            worker = installer.rendered_unit("appserver-worker", layout, sys.executable)
 
         self.assertIn("-m faryo_cli internal run-owner", owner)
         self.assertIn("-m faryo_cli internal run-gateway", gateway)
@@ -421,6 +485,9 @@ class FaryoCliTest(unittest.TestCase):
         self.assertNotIn("run-gateway.sh", gateway)
         self.assertNotIn("PYTHONPATH=", owner + gateway)
         self.assertNotIn("@FARYO_", owner + gateway)
+        self.assertIn("internal run-appserver-worker %i", worker)
+        self.assertIn("KillMode=mixed", worker)
+        self.assertNotIn("@FARYO_", worker)
 
     def test_service_unit_preserves_private_venv_python_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -542,10 +609,237 @@ class FaryoCliTest(unittest.TestCase):
             self.assertTrue((xdg / "systemd/user/faryo-owner.service").is_file())
             self.assertTrue((xdg / "systemd/user/faryo-gateway.service").is_file())
             self.assertTrue((xdg / "systemd/user/faryo-appserver.service").is_file())
+            self.assertTrue((xdg / "systemd/user/faryo-appserver-worker@.service").is_file())
             self.assertIn((("faryo-appserver.service", "start"), {}), actions)
             self.assertIn((("faryo-owner.service", "restart"), {}), actions)
             self.assertIn((("faryo-gateway.service", "restart"), {}), actions)
             wait.assert_called_once_with(layout)
+
+    def test_install_migrates_shared_appserver_only_after_idle_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            layout = self.layout(root)
+            registry = installer.appserver_registry_path(layout)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(
+                '{"schemaVersion":1,"sessions":[{"name":"faryo1","thread_id":"fixture-thread","cwd":"/workspace"}]}\n',
+                encoding="utf-8",
+            )
+            registry.chmod(0o600)
+            xdg = root / "config"
+            actions = []
+            with (
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}, clear=False),
+                mock.patch.object(migration, "legacy_owner_exists", return_value=False),
+                mock.patch.object(migration, "tmux_process_snapshot", return_value={"faryo1": (145, 44, 100)}),
+                mock.patch.object(runtime, "appserver_process"),
+                mock.patch.object(installer, "require_idle_appserver_transition") as preflight,
+                mock.patch.object(installer, "systemctl", side_effect=lambda *args, **kwargs: actions.append((args, kwargs))),
+                mock.patch.object(operations, "control_service", side_effect=lambda name, action: actions.append(((name, action), {}))),
+                mock.patch.object(operations, "wait_for_health"),
+            ):
+                result = installer.install_services(layout, python=sys.executable)
+
+        self.assertEqual(result, "installed")
+        preflight.assert_called_once_with(layout)
+        self.assertIn((("faryo-owner.service", "stop"), {}), actions)
+        self.assertIn((("faryo-appserver.service", "restart"), {}), actions)
+        self.assertIn((("faryo-owner.service", "start"), {}), actions)
+        self.assertNotIn((("faryo-owner.service", "restart"), {}), actions)
+
+    def test_install_refuses_shared_topology_migration_during_active_turn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            layout = self.layout(root)
+            registry = installer.appserver_registry_path(layout)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(
+                '{"schemaVersion":1,"sessions":[{"name":"faryo1","thread_id":"fixture-thread","cwd":"/workspace"}]}\n',
+                encoding="utf-8",
+            )
+            registry.chmod(0o600)
+            xdg = root / "config"
+            with (
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}, clear=False),
+                mock.patch.object(migration, "legacy_owner_exists", return_value=False),
+                mock.patch.object(runtime, "appserver_process"),
+                mock.patch.object(installer, "active_appserver_session_count", return_value=1),
+                mock.patch.object(installer, "systemctl") as systemctl,
+            ):
+                with self.assertRaisesRegex(operations.OperationError, "wait for them to become idle"):
+                    installer.install_services(layout, python=sys.executable)
+
+        systemctl.assert_not_called()
+        self.assertFalse((xdg / "systemd/user/faryo-appserver-worker@.service").exists())
+
+    def test_install_downgrades_worker_topology_only_after_idle_preflight(self) -> None:
+        worker_unit = f"faryo-appserver-worker@{'a' * 24}.service"
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            layout = self.layout(root)
+            registry = installer.appserver_registry_path(layout)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "sessions": [
+                            {
+                                "name": "faryo1",
+                                "thread_id": "fixture-thread",
+                                "cwd": "/workspace",
+                                "worker_id": "a" * 24,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry.chmod(0o600)
+            xdg = root / "config"
+            unit_dir = xdg / "systemd/user"
+            unit_dir.mkdir(parents=True)
+            worker_template = unit_dir / installer.UNIT_NAMES["appserver-worker"]
+            worker_template.write_text("previous worker template\n", encoding="utf-8")
+            actions = []
+            with (
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}, clear=False),
+                mock.patch.object(installer, "source_supports_worker_units", return_value=False),
+                mock.patch.object(migration, "legacy_owner_exists", return_value=False),
+                mock.patch.object(migration, "tmux_process_snapshot", return_value={}),
+                mock.patch.object(runtime, "appserver_process"),
+                mock.patch.object(installer, "require_idle_appserver_transition") as preflight,
+                mock.patch.object(appserver_workers, "listed_worker_units", return_value=[worker_unit]),
+                mock.patch.object(
+                    installer,
+                    "systemctl",
+                    side_effect=lambda *args, **kwargs: actions.append((args, kwargs)),
+                ),
+                mock.patch.object(
+                    operations,
+                    "control_service",
+                    side_effect=lambda name, action: actions.append(((name, action), {})),
+                ),
+                mock.patch.object(operations, "wait_for_health"),
+            ):
+                result = installer.install_services(layout, python=sys.executable)
+
+            rewritten = json.loads(registry.read_text(encoding="utf-8"))
+            worker_template_exists = worker_template.exists()
+
+        self.assertEqual(result, "installed")
+        preflight.assert_called_once_with(layout)
+        self.assertEqual(rewritten["schemaVersion"], 1)
+        self.assertIn((("stop", worker_unit), {"check": False}), actions)
+        self.assertFalse(worker_template_exists)
+
+    def test_failed_topology_upgrade_restores_schema_and_unit_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            layout = self.layout(root)
+            registry = installer.appserver_registry_path(layout)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(
+                '{"schemaVersion":1,"sessions":[{"name":"faryo1","thread_id":"fixture-thread","cwd":"/workspace"}]}\n',
+                encoding="utf-8",
+            )
+            registry.chmod(0o600)
+            xdg = root / "config"
+            with (
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}, clear=False),
+                mock.patch.object(migration, "legacy_owner_exists", return_value=False),
+                mock.patch.object(migration, "tmux_process_snapshot", return_value={}),
+                mock.patch.object(runtime, "appserver_process"),
+                mock.patch.object(installer, "require_idle_appserver_transition"),
+                mock.patch.object(installer, "systemctl"),
+                mock.patch.object(operations, "control_service"),
+                mock.patch.object(
+                    operations,
+                    "wait_for_health",
+                    side_effect=operations.OperationError("not healthy"),
+                ),
+            ):
+                with self.assertRaisesRegex(operations.OperationError, "not healthy"):
+                    installer.install_services(layout, python=sys.executable)
+
+            rewritten = json.loads(registry.read_text(encoding="utf-8"))
+            worker_template_exists = (
+                xdg / "systemd/user" / installer.UNIT_NAMES["appserver-worker"]
+            ).exists()
+
+        self.assertEqual(rewritten["schemaVersion"], 1)
+        self.assertFalse(worker_template_exists)
+
+    def test_failed_topology_downgrade_restores_schema_and_worker_template(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            layout = self.layout(root)
+            registry = installer.appserver_registry_path(layout)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            registry.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 2,
+                        "sessions": [
+                            {
+                                "name": "faryo1",
+                                "thread_id": "fixture-thread",
+                                "cwd": "/workspace",
+                                "worker_id": "b" * 24,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            registry.chmod(0o600)
+            xdg = root / "config"
+            unit_dir = xdg / "systemd/user"
+            unit_dir.mkdir(parents=True)
+            worker_template = unit_dir / installer.UNIT_NAMES["appserver-worker"]
+            worker_template.write_text("previous worker template\n", encoding="utf-8")
+            with (
+                mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": str(xdg)}, clear=False),
+                mock.patch.object(installer, "source_supports_worker_units", return_value=False),
+                mock.patch.object(migration, "legacy_owner_exists", return_value=False),
+                mock.patch.object(migration, "tmux_process_snapshot", return_value={}),
+                mock.patch.object(runtime, "appserver_process"),
+                mock.patch.object(installer, "require_idle_appserver_transition"),
+                mock.patch.object(appserver_workers, "listed_worker_units", return_value=[]),
+                mock.patch.object(installer, "systemctl"),
+                mock.patch.object(operations, "control_service"),
+                mock.patch.object(
+                    operations,
+                    "wait_for_health",
+                    side_effect=operations.OperationError("not healthy"),
+                ),
+            ):
+                with self.assertRaisesRegex(operations.OperationError, "not healthy"):
+                    installer.install_services(layout, python=sys.executable)
+
+            rewritten = json.loads(registry.read_text(encoding="utf-8"))
+            restored_template = worker_template.read_text(encoding="utf-8")
+
+        self.assertEqual(rewritten["schemaVersion"], 2)
+        self.assertEqual(restored_template, "previous worker template\n")
+
+    def test_registry_schema_rewrite_is_body_preserving_and_private(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "state/appserver-sessions.json"
+            path.parent.mkdir(parents=True)
+            original = {
+                "schemaVersion": 2,
+                "sessions": [{"name": "faryo1", "thread_id": "fixture-thread", "cwd": "/workspace", "worker_id": "a" * 24}],
+            }
+            path.write_text(json.dumps(original), encoding="utf-8")
+
+            installer.rewrite_registry_schema(path, 1)
+            rewritten = json.loads(path.read_text(encoding="utf-8"))
+            mode = path.stat().st_mode & 0o777
+
+        self.assertEqual(rewritten["schemaVersion"], 1)
+        self.assertEqual(rewritten["sessions"], original["sessions"])
+        self.assertEqual(mode, 0o600)
 
     def test_install_restores_previous_units_when_health_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

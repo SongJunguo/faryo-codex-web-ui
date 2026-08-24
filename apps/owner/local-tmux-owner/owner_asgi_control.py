@@ -221,15 +221,9 @@ class OwnerControlRoutes:
 
             def close_app_server_session() -> dict[str, Any]:
                 # The cross-backend namespace lock keeps a concurrent New or
-                # Resume from racing the last-session service recycle.
+                # Resume from racing this session worker's verified teardown.
                 with self.core.RUNTIME_LOCK:
-                    result = self.support.runtime.close_session(session, interrupt=interrupt)
-                    if not self.support.runtime.session_records():
-                        released = self.core.recycle_codex_app_server_service(
-                            str(result.get("threadId") or "")
-                        )
-                        result["writerRelease"] = "immediate" if released else "delayed"
-                    return result
+                    return self.support.runtime.close_session(session, interrupt=interrupt)
 
             try:
                 result = await to_thread.run_sync(

@@ -14,6 +14,9 @@ import owner_asgi_control
 import owner_asgi_events
 import owner_asgi_read
 import owner_asgi_support
+from faryo_cli.appserver_workers import WorkerServiceManager
+from faryo_cli.diagnostics import Layout
+from faryo_cli.operations import systemctl
 
 
 def create_app(core: Any, config: Any, runtime: Any | None = None) -> Starlette:
@@ -24,6 +27,7 @@ def create_app(core: Any, config: Any, runtime: Any | None = None) -> Starlette:
         reserved_names=lambda: core.tmux_sessions(config),
         namespace_lock=core.RUNTIME_LOCK,
         command_store=core.command_timeline_store(),
+        worker_manager=WorkerServiceManager(Layout.from_environment(), systemctl),
     )
     support = owner_asgi_support.OwnerAsgiSupport(core, config, web_runtime)
     streams = owner_asgi_events.OwnerEventStreams(core, support)

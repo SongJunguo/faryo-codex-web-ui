@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass
 import json
 import os
 from pathlib import Path
+import re
+import secrets
 import tempfile
 import threading
 import time
@@ -15,8 +17,19 @@ from faryo_cli import session_backend
 import session_namespace
 
 
-REGISTRY_SCHEMA_VERSION = 1
+REGISTRY_SCHEMA_VERSION = 2
+LEGACY_REGISTRY_SCHEMA_VERSION = 1
 SESSION_NAME_RE = session_namespace.SESSION_NAME_RE
+WORKER_ID_RE = re.compile(r"^[a-f0-9]{24}$")
+WORKER_STATES = {"unknown", "starting", "ready", "reconnecting", "degraded", "stopping", "exited"}
+
+
+def new_worker_id(existing: Iterable[str] = ()) -> str:
+    used = {str(value) for value in existing}
+    while True:
+        value = secrets.token_hex(12)
+        if value not in used:
+            return value
 
 
 @dataclass
@@ -30,9 +43,18 @@ class WebSessionRecord:
     created_at: int = 0
     updated_at: int = 0
     backend: str = session_backend.APP_SERVER.value
+    worker_id: str = ""
+    worker_generation: int = 0
+    worker_state: str = "unknown"
 
     @classmethod
-    def from_value(cls, value: Any) -> "WebSessionRecord | None":
+    def from_value(
+        cls,
+        value: Any,
+        *,
+        allow_missing_worker: bool = False,
+        existing_workers: Iterable[str] = (),
+    ) -> "WebSessionRecord | None":
         if not isinstance(value, dict):
             return None
         name = str(value.get("name") or "")
@@ -40,11 +62,20 @@ class WebSessionRecord:
         cwd = str(value.get("cwd") or "")
         if not SESSION_NAME_RE.fullmatch(name) or not thread_id or not cwd or "\x00" in cwd:
             return None
+        worker_id = str(value.get("worker_id") or value.get("workerId") or "")
+        if not worker_id and allow_missing_worker:
+            worker_id = new_worker_id(existing_workers)
+        if not WORKER_ID_RE.fullmatch(worker_id):
+            return None
         try:
             created_at = max(0, int(value.get("created_at") or value.get("createdAt") or 0))
             updated_at = max(0, int(value.get("updated_at") or value.get("updatedAt") or 0))
+            worker_generation = max(0, int(value.get("worker_generation") or value.get("workerGeneration") or 0))
         except (TypeError, ValueError):
             return None
+        worker_state = str(value.get("worker_state") or value.get("workerState") or "unknown")
+        if worker_state not in WORKER_STATES:
+            worker_state = "unknown"
         return cls(
             name=name,
             thread_id=thread_id,
@@ -54,6 +85,9 @@ class WebSessionRecord:
             launch_id=str(value.get("launch_id") or value.get("launchId") or "")[:160],
             created_at=created_at,
             updated_at=updated_at,
+            worker_id=worker_id,
+            worker_generation=worker_generation,
+            worker_state=worker_state,
         )
 
     def public(self) -> dict[str, Any]:
@@ -66,6 +100,7 @@ class WebSessionRecord:
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
             "backend": self.backend,
+            "workerState": self.worker_state,
         }
 
 
@@ -87,13 +122,25 @@ class WebSessionRegistry:
             except (OSError, json.JSONDecodeError):
                 self.load_errors += 1
                 return
-            if not isinstance(value, dict) or value.get("schemaVersion") != REGISTRY_SCHEMA_VERSION:
+            if not isinstance(value, dict) or value.get("schemaVersion") not in {
+                LEGACY_REGISTRY_SCHEMA_VERSION,
+                REGISTRY_SCHEMA_VERSION,
+            }:
                 self.load_errors += 1
                 return
+            legacy = value.get("schemaVersion") == LEGACY_REGISTRY_SCHEMA_VERSION
+            workers: set[str] = set()
             for item in value.get("sessions") or []:
-                record = WebSessionRecord.from_value(item)
-                if record is not None and record.name not in self.records:
+                record = WebSessionRecord.from_value(
+                    item,
+                    allow_missing_worker=legacy,
+                    existing_workers=workers,
+                )
+                if record is not None and record.name not in self.records and record.worker_id not in workers:
                     self.records[record.name] = record
+                    workers.add(record.worker_id)
+            if legacy:
+                self.save()
 
     def save(self) -> None:
         with self.lock:
@@ -161,12 +208,18 @@ class WebSessionRegistry:
         launch_id: str = "",
         reserved: Iterable[str] = (),
         name: str = "",
+        worker_id: str = "",
         now: int | None = None,
     ) -> WebSessionRecord:
         with self.lock:
             selected_name = name or self.next_name(reserved)
             if not SESSION_NAME_RE.fullmatch(selected_name) or selected_name in self.records:
                 raise ValueError("web session name is unavailable")
+            selected_worker = worker_id or new_worker_id(record.worker_id for record in self.records.values())
+            if not WORKER_ID_RE.fullmatch(selected_worker):
+                raise ValueError("app server worker id is invalid")
+            if any(record.worker_id == selected_worker for record in self.records.values()):
+                raise ValueError("app server worker id is unavailable")
             timestamp = int(time.time() if now is None else now)
             record = WebSessionRecord(
                 name=selected_name,
@@ -177,6 +230,7 @@ class WebSessionRegistry:
                 launch_id=launch_id[:160],
                 created_at=timestamp,
                 updated_at=timestamp,
+                worker_id=selected_worker,
             )
             self.records[record.name] = record
             self.save()
@@ -213,6 +267,19 @@ class WebSessionRegistry:
                 record.title = str(title)[:240]
             if model is not None:
                 record.model = str(model)[:160]
+            record.updated_at = int(time.time())
+            self.save()
+
+    def update_worker_state(self, name: str, state: str, *, increment_generation: bool = False) -> None:
+        if state not in WORKER_STATES:
+            raise ValueError("app server worker state is invalid")
+        with self.lock:
+            record = self.records.get(name)
+            if record is None:
+                return
+            record.worker_state = state
+            if increment_generation:
+                record.worker_generation += 1
             record.updated_at = int(time.time())
             self.save()
 

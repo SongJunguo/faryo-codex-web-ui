@@ -104,6 +104,7 @@ release_checks() {
     "$ROOT/apps/owner/local-tmux-owner/appserver_registry.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_requests.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_runtime.py" \
+    "$ROOT/apps/owner/local-tmux-owner/appserver_session_supervisor.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_session.py" \
     "$ROOT/apps/owner/local-tmux-owner/appserver_transport.py" \
     "$ROOT/apps/owner/local-tmux-owner/session_launch.py" \
@@ -141,6 +142,7 @@ release_checks() {
     "$ROOT/src/faryo_cli/__init__.py" \
     "$ROOT/src/faryo_cli/__main__.py" \
     "$ROOT/src/faryo_cli/application.py" \
+    "$ROOT/src/faryo_cli/appserver_workers.py" \
     "$ROOT/src/faryo_cli/browser_contract.py" \
     "$ROOT/src/faryo_cli/cli.py" \
     "$ROOT/src/faryo_cli/codex_runtime.py" \
@@ -276,6 +278,7 @@ appserver_history_source = (root / "apps/owner/local-tmux-owner/appserver_histor
 appserver_rollout_source = (root / "apps/owner/local-tmux-owner/appserver_rollout.py").read_text(encoding="utf-8")
 appserver_registry_source = (root / "apps/owner/local-tmux-owner/appserver_registry.py").read_text(encoding="utf-8")
 appserver_runtime_source = (root / "apps/owner/local-tmux-owner/appserver_runtime.py").read_text(encoding="utf-8")
+appserver_supervisor_source = (root / "apps/owner/local-tmux-owner/appserver_session_supervisor.py").read_text(encoding="utf-8")
 session_namespace_source = (root / "apps/owner/local-tmux-owner/session_namespace.py").read_text(encoding="utf-8")
 command_timeline_source = (root / "apps/owner/local-tmux-owner/command_timeline.py").read_text(encoding="utf-8")
 real_appserver_browser_source = (root / "apps/owner/local-tmux-owner/tests/browser-real-appserver-streaming.mjs").read_text(encoding="utf-8")
@@ -399,9 +402,14 @@ for script_path in (
 owner_init_source = (root / "apps/owner/scripts/init-owner-env.sh").read_text(encoding="utf-8")
 gateway_init_source = (root / "apps/gateway/scripts/init-local-gateway.sh").read_text(encoding="utf-8")
 owner_unit_source = (root / "deploy/user-systemd/faryo-owner.service").read_text(encoding="utf-8")
+worker_unit_source = (root / "deploy/user-systemd/faryo-appserver-worker@.service").read_text(encoding="utf-8")
 gateway_unit_source = (root / "deploy/user-systemd/faryo-gateway.service").read_text(encoding="utf-8")
 assert "KillMode=process" in owner_unit_source and "KillMode=mixed" not in owner_unit_source, "Owner restart must preserve tmux/Codex cgroup children"
+assert "internal run-appserver-worker %i" in worker_unit_source and "KillMode=mixed" in worker_unit_source, "each App Server session worker needs one validated systemd cgroup"
 assert "PYTHONPATH=" not in owner_unit_source + gateway_unit_source and "sanitized_agent_environment" in owner_server, "Faryo service internals must not leak into managed tmux/Codex environments"
+assert "self.session_clients" in appserver_runtime_source and "_require_session_client" in appserver_runtime_source and "WorkerServiceManager" in owner_asgi_source, "App Server turns must route through per-session workers"
+assert "class AppServerSessionSupervisor" in appserver_supervisor_source and "restart_requested" in appserver_supervisor_source and "circuit_until" in appserver_supervisor_source, "per-session worker recovery and circuit isolation must remain explicit"
+assert "recycle_codex_app_server_service" not in owner_backend_source and "faryo-appserver-worker@.service" in (root / "src/faryo_cli/installer.py").read_text(encoding="utf-8"), "shared whole-service writer recycling must stay retired"
 assert "faryo_resolve_python" in owner_init_source and "faryo_resolve_python" in gateway_init_source, "initializers must use shared Python discovery"
 assert 'or "720"' in gateway_init_source and "1 <= parsed_session_hours <= 720" in gateway_init_source, "Gateway initializer must keep the 30-day session contract"
 assert 'id="historySearchInput"' in gateway and 'data-history-period="7d"' in gateway, "Gateway must expose metadata history search"

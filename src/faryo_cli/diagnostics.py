@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import stat
@@ -20,6 +21,7 @@ from . import codex_runtime
 
 SCHEMA_VERSION = 1
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
+WORKER_UNIT_RE = re.compile(r"^faryo-appserver-worker@[a-f0-9]{24}\.service$")
 
 
 @dataclass(frozen=True)
@@ -148,6 +150,39 @@ def systemd_user_available() -> bool:
         return run_command([executable, "--user", "show-environment"]).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def appserver_worker_service_counts() -> tuple[int, int, int]:
+    executable = shutil.which("systemctl")
+    if not executable:
+        return (0, 0, 0)
+    try:
+        result = run_command(
+            [
+                executable,
+                "--user",
+                "list-units",
+                "--all",
+                "--plain",
+                "--no-legend",
+                "--type=service",
+                "faryo-appserver-worker@*.service",
+            ],
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return (0, 0, 0)
+    if result.returncode != 0:
+        return (0, 0, 0)
+    total = active = failed = 0
+    for line in result.stdout.splitlines():
+        parts = line.split(maxsplit=4)
+        if len(parts) < 4 or not WORKER_UNIT_RE.fullmatch(parts[0]):
+            continue
+        total += 1
+        active += int(parts[2] == "active")
+        failed += int(parts[2] == "failed" or parts[3] == "failed")
+    return total, active, failed
 
 
 def tmux_session_exists(name: str) -> bool:
@@ -286,6 +321,7 @@ def build_report(layout: Layout | None = None) -> dict[str, Any]:
     gateway_service = service_state("faryo-gateway.service")
     owner_service = service_state("faryo-owner.service")
     appserver_service = service_state("faryo-appserver.service")
+    worker_total, worker_active, worker_failed = appserver_worker_service_counts()
     keepalive = service_state("faryo-owner-keepalive.timer")
     legacy_tmux = tmux_session_exists("local-tmux-owner")
     checks.append(check("gateway-service", "ok" if gateway_service == "active" else "warn", gateway_service))
@@ -297,6 +333,8 @@ def build_report(layout: Layout | None = None) -> dict[str, Any]:
         appserver_socket_ready = False
     checks.append(check("appserver-service", "ok" if appserver_service == "active" else "warn", appserver_service))
     checks.append(check("appserver-socket", "ok" if appserver_socket_ready else "warn", "ready" if appserver_socket_ready else "unavailable"))
+    worker_status = "warn" if worker_failed or worker_active != worker_total else "ok"
+    checks.append(check("appserver-workers", worker_status, f"{worker_active} active, {worker_total} registered"))
     checks.append(check("legacy-owner", "warn" if legacy_tmux or keepalive == "active" else "ok", "legacy supervision active" if legacy_tmux or keepalive == "active" else "retired"))
 
     status_counts = {value: sum(1 for item in checks if item["status"] == value) for value in ("ok", "warn", "error")}
@@ -306,7 +344,11 @@ def build_report(layout: Layout | None = None) -> dict[str, Any]:
         "checks": checks,
         "counts": status_counts,
         "services": {"appserver": appserver_service, "owner": owner_service, "gateway": gateway_service, "legacyKeepalive": keepalive},
-        "runtime": {"environment": environment_kind, "tmuxSessions": tmux_session_count()},
+        "runtime": {
+            "appServerWorkers": {"active": worker_active, "failed": worker_failed, "total": worker_total},
+            "environment": environment_kind,
+            "tmuxSessions": tmux_session_count(),
+        },
     }
 
 
@@ -320,6 +362,7 @@ def compact_status(report: Mapping[str, Any]) -> dict[str, Any]:
         "appserver": {
             "service": (report.get("services") or {}).get("appserver"),
             "socket": (checks.get("appserver-socket") or {}).get("status"),
+            "workers": dict((report.get("runtime") or {}).get("appServerWorkers") or {}),
         },
         "legacyOwner": (checks.get("legacy-owner") or {}).get("status") == "warn",
         "tmuxSessions": int((report.get("runtime") or {}).get("tmuxSessions") or 0),

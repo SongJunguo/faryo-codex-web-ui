@@ -9,6 +9,7 @@ import sys
 from typing import Mapping
 
 from faryo_cli import codex_runtime
+from faryo_cli import appserver_workers
 from faryo_cli.diagnostics import LOOPBACK_HOSTS, Layout, private_file_state, read_env
 from faryo_cli.operations import OperationError
 
@@ -184,6 +185,33 @@ def appserver_process(layout: Layout | None = None) -> ProcessSpec:
     if not executable:
         raise OperationError("Codex CLI is unavailable")
     socket_path = appserver_socket_path(selected, values)
+    argv = codex_runtime.codex_argv(
+        executable,
+        "app-server",
+        "--listen",
+        f"unix://{socket_path}",
+    )
+    environment = codex_runtime.codex_environment(
+        argv,
+        normalized_environment(values, selected.home),
+    )
+    return ProcessSpec(argv=argv, cwd=selected.home, environment=environment)
+
+
+def appserver_worker_process(worker_id: str, layout: Layout | None = None) -> ProcessSpec:
+    selected = layout or Layout.from_environment()
+    values = require_private_config(selected.owner_env, "Owner")
+    environment_values = dict(os.environ)
+    environment_values.update(values)
+    executable = codex_runtime.resolve_codex(
+        values.get("FARYO_CODEX_BIN") or "",
+        selected.home,
+        environment_values,
+    )
+    if not executable:
+        raise OperationError("Codex CLI is unavailable")
+    appserver_workers.prepare_worker_runtime(selected)
+    socket_path = appserver_workers.worker_socket_path(selected, worker_id)
     argv = codex_runtime.codex_argv(
         executable,
         "app-server",

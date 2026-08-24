@@ -65,6 +65,7 @@ class WorkbenchService:
             "source": source,
             "backend": (backend or session_backend.CODEX_TUI).value,
             "appServerReady": bool(runtime.get("ready")) if runtime else None,
+            "appServerWorkerState": str(item.get("appServerWorkerState") or "") or None,
         }
 
     def owner_sessions(

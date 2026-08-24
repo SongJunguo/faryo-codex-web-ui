@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import appserver_history
 from appserver_runtime import AppServerRuntime
 import codex_history
 from faryo_cli import codex_runtime
+from faryo_cli.appserver_workers import validate_worker_id
 import owner_asgi
 import server
 
@@ -49,6 +51,93 @@ for the required write. After it completes, briefly report the content and end w
 USER_INPUT_PROMPT = """Use the request_user_input tool exactly once. Ask me to choose between Alpha and Beta,
 with header Choice. After I answer, state the selected value and end with USER_INPUT_DONE. Do not use other tools.
 """
+
+
+class SubprocessWorkerManager:
+    """Real-test worker supervisor with the same one-process-per-session boundary."""
+
+    def __init__(
+        self,
+        root: Path,
+        executable: str,
+        workspace: Path,
+        environment: dict[str, str],
+    ) -> None:
+        self.root = root
+        self.executable = executable
+        self.workspace = workspace
+        self.environment = environment
+        self.processes: dict[str, subprocess.Popen[bytes]] = {}
+        self.logs: dict[str, object] = {}
+        self.lock = threading.RLock()
+
+    def socket_path(self, worker_id: str) -> Path:
+        return self.root / f"{validate_worker_id(worker_id)}.sock"
+
+    def start(self, worker_id: str, *, timeout: float = 12.0) -> Path:
+        selected = validate_worker_id(worker_id)
+        with self.lock:
+            process = self.processes.get(selected)
+            path = self.socket_path(selected)
+            if process is not None and process.poll() is None and path.is_socket():
+                return path
+            self._stop_locked(selected)
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.unlink(missing_ok=True)
+            argv = codex_runtime.codex_argv(
+                self.executable,
+                "app-server",
+                "--listen",
+                f"unix://{path}",
+            )
+            handle = (self.root / f"{selected}.log").open("ab")
+            process = subprocess.Popen(
+                argv,
+                cwd=self.workspace,
+                env=self.environment,
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            self.logs[selected] = handle
+            self.processes[selected] = process
+        wait_for_socket(path, process, timeout)
+        return path
+
+    def restart(self, worker_id: str, *, timeout: float = 12.0) -> Path:
+        self.stop(worker_id, timeout=timeout)
+        return self.start(worker_id, timeout=timeout)
+
+    def stop(self, worker_id: str, *, timeout: float = 12.0) -> None:
+        selected = validate_worker_id(worker_id)
+        with self.lock:
+            self._stop_locked(selected, timeout=timeout)
+
+    def _stop_locked(self, worker_id: str, *, timeout: float = 5.0) -> None:
+        process = self.processes.pop(worker_id, None)
+        handle = self.logs.pop(worker_id, None)
+        if process is not None and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=max(0.1, timeout))
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+        if handle is not None:
+            handle.close()
+        self.socket_path(worker_id).unlink(missing_ok=True)
+
+    def close_all(self) -> None:
+        with self.lock:
+            for worker_id in list(self.processes):
+                self._stop_locked(worker_id)
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,7 +216,7 @@ def start_plan_turn(runtime: AppServerRuntime, session: str, prompt: str, client
     capture = runtime.capture(session)
     thread = capture.get("snapshot", {}).get("thread") or {}
     model = str(thread.get("model") or record.model or "")
-    client = runtime._require_client()  # Test-only access to the versioned protocol client.
+    client = runtime._require_session_client(session)  # Test-only access to the session worker.
     if not model:
         result = runtime._submit(client.rpc("model/list", {"includeHidden": False, "limit": 100}), 15)
         models = result.get("data") if isinstance(result, dict) else None
@@ -188,6 +277,7 @@ def main() -> int:
         environment["CODEX_HOME"] = str(codex_home)
         log_path = runtime_root / "appserver.log"
         process: subprocess.Popen[bytes] | None = None
+        worker_manager: SubprocessWorkerManager | None = None
         runtime: AppServerRuntime | None = None
         web_server: uvicorn.Server | None = None
         web_thread: threading.Thread | None = None
@@ -202,10 +292,17 @@ def main() -> int:
                     stderr=subprocess.STDOUT,
                 )
                 wait_for_socket(socket_path, process)
+                worker_manager = SubprocessWorkerManager(
+                    runtime_root / "workers",
+                    executable,
+                    workspace,
+                    environment,
+                )
                 runtime = AppServerRuntime(
                     socket_path=socket_path,
                     registry_path=registry_path,
                     client_version="real-test",
+                    worker_manager=worker_manager,
                 )
                 runtime.start()
                 if not runtime.wait_ready(12):
@@ -424,6 +521,7 @@ def main() -> int:
                         socket_path=socket_path,
                         registry_path=registry_path,
                         client_version="real-test-restarted",
+                        worker_manager=worker_manager,
                     )
                     runtime.start()
                     if not runtime.wait_ready(12):
@@ -458,6 +556,8 @@ def main() -> int:
                 web_thread.join(5)
             if runtime is not None:
                 runtime.stop()
+            if worker_manager is not None:
+                worker_manager.close_all()
             if process is not None and process.poll() is None:
                 process.terminate()
                 try:

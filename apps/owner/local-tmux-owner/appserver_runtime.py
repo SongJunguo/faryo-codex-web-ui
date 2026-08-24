@@ -14,11 +14,10 @@ from typing import Any, Callable, Mapping
 from appserver_events import EventJournal, ReplayResult
 from appserver_commands import AppServerCommandError, AppServerCommandService
 from appserver_protocol import AppServerError, AppServerUnavailable
-from appserver_registry import WebSessionRecord, WebSessionRegistry
+from appserver_registry import WebSessionRecord, WebSessionRegistry, new_worker_id
+import appserver_session_supervisor
 from appserver_requests import (
-    APPROVAL_METHODS,
     CLIENT_REQUEST_RE,
-    USER_INPUT_METHOD,
     AppServerInteractionBroker,
     AppServerInteractionError,
     declined_response,
@@ -66,6 +65,8 @@ class AppServerRuntime:
         namespace_lock: threading.RLock | None = None,
         command_store: command_timeline.CommandTimelineStore | None = None,
         client_factory: Callable[[Callable[..., Any], Callable[..., Any]], Any] | None = None,
+        session_client_factory: Callable[[Callable[..., Any], Callable[..., Any]], Any] | None = None,
+        worker_manager: appserver_session_supervisor.AppServerWorkerManager | None = None,
         journal_max_events: int = 4096,
         journal_max_bytes: int = 8 * 1024 * 1024,
     ) -> None:
@@ -78,9 +79,38 @@ class AppServerRuntime:
             registry_path.with_name("command-timeline.json")
         )
         self.client_factory = client_factory
+        self.session_client_factory = session_client_factory or client_factory
+        self.worker_manager = worker_manager or (
+            appserver_session_supervisor.FactoryWorkerManager(
+                registry_path.with_name("appserver-workers")
+            )
+            if client_factory is not None
+            else None
+        )
+        if self.worker_manager is None:
+            raise ValueError("worker_manager is required for production App Server sessions")
         self.journal = EventJournal(max_events=journal_max_events, max_bytes=journal_max_bytes)
         self.actors: dict[str, WebSessionActor] = {}
         self.client: AsyncCodexAppServerClient | None = None
+        self.session_supervisor = appserver_session_supervisor.AppServerSessionSupervisor(
+            client_version=self.client_version,
+            worker_manager=self.worker_manager,
+            record=self.registry.get,
+            notification=self._session_notification,
+            server_request=self._server_request_for,
+            state_changed=lambda name, state, increment: self._update_worker_state(
+                name,
+                state,
+                increment_generation=increment,
+            ),
+            hydrated=self._session_hydrated,
+            error_observed=self._session_error_observed,
+            probe_required=self._worker_probe_required,
+            client_factory=self.session_client_factory,
+        )
+        self.session_clients = self.session_supervisor.clients
+        self.session_reconnect_tasks = self.session_supervisor.reconnect_tasks
+        self.pending_session_notifications: dict[str, list[tuple[str, dict[str, Any]]]] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
         self.thread: threading.Thread | None = None
         self.stop_async: asyncio.Event | None = None
@@ -116,6 +146,7 @@ class AppServerRuntime:
                 self.registry.reassign_conflicts(self.reserved_names())
             self.state = "connecting"
             self.last_error = ""
+            self.session_supervisor.begin()
             self.started_at = time.monotonic()
             self.thread = threading.Thread(target=self._thread_main, name="faryo-appserver-runtime", daemon=True)
             self.thread.start()
@@ -123,6 +154,7 @@ class AppServerRuntime:
     def stop(self, timeout: float = 5.0) -> None:
         loop = self.loop
         stop = self.stop_async
+        self.session_supervisor.request_stop()
         if loop is not None and stop is not None:
             loop.call_soon_threadsafe(stop.set)
         thread = self.thread
@@ -145,13 +177,22 @@ class AppServerRuntime:
 
     def status(self) -> dict[str, Any]:
         with self.condition:
+            worker_states = {
+                state: sum(1 for record in self.registry.values() if record.worker_state == state)
+                for state in ("starting", "ready", "reconnecting", "degraded", "stopping", "exited")
+            }
             return {
                 "state": self.state,
                 "ready": self.state == "ready",
                 "reconnectCount": self.reconnect_count,
                 "sessionCount": len(self.registry.values()),
                 "loadedSessionCount": len(self.actors),
-                "pendingRpcCount": self.client.pending_count if self.client is not None else 0,
+                "pendingRpcCount": (
+                    (self.client.pending_count if self.client is not None else 0)
+                    + self.session_supervisor.pending_count
+                ),
+                "workerStates": worker_states,
+                "openCircuitCount": self.session_supervisor.open_circuit_count,
                 "experimentalApi": bool(getattr(self.client, "experimental_api", False)) if self.client is not None else False,
                 "lastError": self.last_error,
                 "eventCursor": self.journal.latest.render(),
@@ -343,6 +384,7 @@ class AppServerRuntime:
         self.loop = asyncio.get_running_loop()
         self.stop_async = asyncio.Event()
         self.launch_lock = asyncio.Lock()
+        self.session_supervisor.start_monitor()
         delay = RUNTIME_RECONNECT_MIN_SECONDS
         while not self.stop_async.is_set():
             self.disconnected_async = asyncio.Event()
@@ -363,12 +405,6 @@ class AppServerRuntime:
                 )
             )
             self.client = client
-            if hasattr(client, "register_server_request"):
-                for method in sorted({*APPROVAL_METHODS, USER_INPUT_METHOD}):
-                    client.register_server_request(
-                        method,
-                        lambda params, selected=method: self._server_request(selected, params),
-                    )
             self._set_state("connecting")
             try:
                 await client.connect()
@@ -409,24 +445,86 @@ class AppServerRuntime:
             except asyncio.TimeoutError:
                 pass
             delay = min(RUNTIME_RECONNECT_MAX_SECONDS, delay * 1.8)
+        await self.session_supervisor.close_connections()
         self._set_state("stopped")
 
     async def _restore_sessions(self) -> None:
-        client = self._require_client()
-        for record in self.registry.values():
-            actor = self.actors.get(record.name)
-            if actor is None:
-                actor = WebSessionActor(session_id=record.name, thread_id=record.thread_id)
-                actor.require_durable_activity()
-            self.actors[record.name] = actor
-            try:
-                result = await client.rpc("thread/resume", {"threadId": record.thread_id})
-            except AppServerError:
-                continue
-            thread = result.get("thread") if isinstance(result, dict) else None
-            if isinstance(thread, Mapping):
-                actor.hydrate(thread)
-                self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+        self.session_supervisor.restore_all(self.registry.values())
+
+    async def _session_hydrated(self, name: str, thread: Mapping[str, Any]) -> None:
+        record = self.registry.get(name)
+        if record is None:
+            return
+        actor = self.actors.get(name)
+        if actor is None:
+            actor = WebSessionActor(session_id=name, thread_id=record.thread_id)
+            actor.require_durable_activity()
+            self.actors[name] = actor
+        actor.hydrate(thread)
+        self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+        await self._flush_pending_session_notifications(name)
+
+    def _session_error_observed(self, error: BaseException) -> None:
+        with self.condition:
+            self.last_error = self._error_class(error)
+            self.condition.notify_all()
+
+    def _worker_probe_required(self, name: str) -> bool:
+        actor = self.actors.get(name)
+        return bool(actor is not None and (actor.active_turn_id or actor.interaction is not None))
+
+    async def _session_notification(
+        self,
+        name: str,
+        source_client: AsyncCodexAppServerClient,
+        method: str,
+        params: dict[str, Any],
+    ) -> None:
+        if self.session_clients.get(name) is not source_client:
+            with self.condition:
+                key = "__stale_worker_notification__"
+                self.ignored_notifications[key] = self.ignored_notifications.get(key, 0) + 1
+            return
+        record = self.registry.get(name)
+        if record is None:
+            pending = self.pending_session_notifications.setdefault(name, [])
+            if len(pending) < 128:
+                pending.append((method, dict(params)))
+            return
+        thread_id = str(params.get("threadId") or "")
+        if not thread_id:
+            thread = params.get("thread")
+            thread_id = str(thread.get("id") or "") if isinstance(thread, Mapping) else ""
+        if thread_id and thread_id != record.thread_id:
+            with self.condition:
+                key = "__cross_session_notification__"
+                self.ignored_notifications[key] = self.ignored_notifications.get(key, 0) + 1
+            return
+        await self._notification(method, params)
+
+    async def _flush_pending_session_notifications(self, name: str) -> None:
+        client = self.session_clients.get(name)
+        if client is None:
+            self.pending_session_notifications.pop(name, None)
+            return
+        for method, params in self.pending_session_notifications.pop(name, []):
+            await self._session_notification(name, client, method, params)
+
+    def _update_worker_state(
+        self,
+        name: str,
+        state: str,
+        *,
+        increment_generation: bool = False,
+    ) -> None:
+        try:
+            self.registry.update_worker_state(
+                name,
+                state,
+                increment_generation=increment_generation,
+            )
+        except ValueError:
+            return
 
     async def _notification(self, method: str, params: dict[str, Any]) -> None:
         if method == "account/rateLimits/updated":
@@ -469,10 +567,18 @@ class AppServerRuntime:
         elif method in {"turn/started", "turn/completed"}:
             self.registry.touch(record.name)
 
-    async def _server_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _server_request_for(
+        self,
+        name: str,
+        method: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        record = self.registry.get(name)
         thread_id = str(params.get("threadId") or "")
-        record = self.registry.by_thread(thread_id) if thread_id else None
-        if record is None:
+        if (
+            record is None
+            or (thread_id and thread_id != record.thread_id)
+        ):
             return declined_response(method, params)
         actor = self.actors.get(record.name)
         if actor is not None and actor.interaction is not None:
@@ -513,7 +619,9 @@ class AppServerRuntime:
                 "backend": existing.backend,
                 "duplicate": True,
             }
-        client = self._require_client()
+        selected_name = self.registry.next_name(self.reserved_names())
+        worker_id = new_worker_id(record.worker_id for record in self.registry.values())
+        client: AsyncCodexAppServerClient | None = None
         params: dict[str, Any] = {"cwd": cwd, "serviceName": "faryo"}
         if model:
             params["model"] = model
@@ -521,24 +629,33 @@ class AppServerRuntime:
             params["serviceTier"] = service_tier
         if context_window_k:
             params["config"] = {"model_context_window": context_window_k * 1000}
-        result = await client.rpc("thread/start", params)
-        thread = result.get("thread") if isinstance(result, dict) else None
-        thread_id = str(thread.get("id") or "") if isinstance(thread, Mapping) else ""
-        if not thread_id:
-            raise AppServerRuntimeError("Codex App Server did not return a thread id")
-        record = self.registry.add(
-            thread_id=thread_id,
-            cwd=cwd,
-            title=title,
-            model=model,
-            launch_id=launch_id,
-            reserved=self.reserved_names(),
-        )
+        try:
+            client = await self.session_supervisor.open_client(selected_name, worker_id)
+            result = await client.rpc("thread/start", params)
+            thread = result.get("thread") if isinstance(result, dict) else None
+            thread_id = str(thread.get("id") or "") if isinstance(thread, Mapping) else ""
+            if not thread_id:
+                raise AppServerRuntimeError("Codex App Server did not return a thread id")
+            record = self.registry.add(
+                name=selected_name,
+                worker_id=worker_id,
+                thread_id=thread_id,
+                cwd=cwd,
+                title=title,
+                model=model,
+                launch_id=launch_id,
+                reserved=self.reserved_names(),
+            )
+        except BaseException:
+            await self._discard_unregistered_worker(selected_name, worker_id, client)
+            raise
         actor = WebSessionActor(session_id=record.name, thread_id=thread_id)
         if isinstance(thread, Mapping):
             actor.hydrate(thread)
         self.actors[record.name] = actor
+        self._update_worker_state(record.name, "ready", increment_generation=True)
         self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+        await self._flush_pending_session_notifications(record.name)
         return {
             "session": record.name,
             "threadId": thread_id,
@@ -546,6 +663,19 @@ class AppServerRuntime:
             "backend": record.backend,
             "duplicate": False,
         }
+
+    async def _discard_unregistered_worker(
+        self,
+        name: str,
+        worker_id: str,
+        client: AsyncCodexAppServerClient | None,
+    ) -> None:
+        self.pending_session_notifications.pop(name, None)
+        await self.session_supervisor.discard_unregistered(
+            name,
+            worker_id,
+            client,
+        )
 
     async def _send(self, name: str, text: str, client_message_id: str) -> dict[str, Any]:
         record, actor = self._require_session(name)
@@ -624,11 +754,11 @@ class AppServerRuntime:
             }
             if active_turn_id:
                 params["expectedTurnId"] = active_turn_id
-                result = await self._require_client().rpc("turn/steer", params)
+                result = await self._session_rpc(record.name, "turn/steer", params)
                 turn_id = str(result.get("turnId") or "") if isinstance(result, Mapping) else ""
                 delivery_state = "steered"
             else:
-                result = await self._require_client().rpc("turn/start", params)
+                result = await self._session_rpc(record.name, "turn/start", params)
                 turn = result.get("turn") if isinstance(result, dict) else None
                 turn_id = str(turn.get("id") or "") if isinstance(turn, Mapping) else ""
                 delivery_state = "submitted"
@@ -701,6 +831,28 @@ class AppServerRuntime:
         service_tier: str,
         context_window_k: int,
     ) -> dict[str, Any]:
+        lock = self.launch_lock
+        if lock is None:
+            raise AppServerRuntimeError("Codex App Server runtime is not ready")
+        async with lock:
+            return await self._resume_session_locked(
+                thread_id,
+                cwd,
+                title,
+                model,
+                service_tier,
+                context_window_k,
+            )
+
+    async def _resume_session_locked(
+        self,
+        thread_id: str,
+        cwd: str,
+        title: str,
+        model: str,
+        service_tier: str,
+        context_window_k: int,
+    ) -> dict[str, Any]:
         clean_thread_id = str(thread_id or "").strip()
         if not clean_thread_id:
             raise AppServerRuntimeError("Codex thread id is required")
@@ -723,27 +875,39 @@ class AppServerRuntime:
             params["serviceTier"] = service_tier
         if context_window_k:
             params["config"] = {"model_context_window": context_window_k * 1000}
-        result = await self._require_client().rpc("thread/resume", params)
-        thread = result.get("thread") if isinstance(result, dict) else None
-        resumed_id = str(thread.get("id") or "") if isinstance(thread, Mapping) else ""
-        if resumed_id != clean_thread_id:
-            raise AppServerRuntimeError("Codex App Server resumed an unexpected thread")
-        thread_cwd = str(thread.get("cwd") or cwd) if isinstance(thread, Mapping) else cwd
-        if not thread_cwd:
-            raise AppServerRuntimeError("resumed Codex thread has no working directory")
-        record = self.registry.add(
-            thread_id=clean_thread_id,
-            cwd=thread_cwd,
-            title=title or (str(thread.get("name") or "") if isinstance(thread, Mapping) else ""),
-            model=model or (str(thread.get("model") or "") if isinstance(thread, Mapping) else ""),
-            reserved=self.reserved_names(),
-        )
+        selected_name = self.registry.next_name(self.reserved_names())
+        worker_id = new_worker_id(record.worker_id for record in self.registry.values())
+        client: AsyncCodexAppServerClient | None = None
+        try:
+            client = await self.session_supervisor.open_client(selected_name, worker_id)
+            result = await client.rpc("thread/resume", params)
+            thread = result.get("thread") if isinstance(result, dict) else None
+            resumed_id = str(thread.get("id") or "") if isinstance(thread, Mapping) else ""
+            if resumed_id != clean_thread_id:
+                raise AppServerRuntimeError("Codex App Server resumed an unexpected thread")
+            thread_cwd = str(thread.get("cwd") or cwd) if isinstance(thread, Mapping) else cwd
+            if not thread_cwd:
+                raise AppServerRuntimeError("resumed Codex thread has no working directory")
+            record = self.registry.add(
+                name=selected_name,
+                worker_id=worker_id,
+                thread_id=clean_thread_id,
+                cwd=thread_cwd,
+                title=title or (str(thread.get("name") or "") if isinstance(thread, Mapping) else ""),
+                model=model or (str(thread.get("model") or "") if isinstance(thread, Mapping) else ""),
+                reserved=self.reserved_names(),
+            )
+        except BaseException:
+            await self._discard_unregistered_worker(selected_name, worker_id, client)
+            raise
         actor = WebSessionActor(session_id=record.name, thread_id=clean_thread_id)
         actor.require_durable_activity()
         if isinstance(thread, Mapping):
             actor.hydrate(thread)
         self.actors[record.name] = actor
+        self._update_worker_state(record.name, "ready", increment_generation=True)
         self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+        await self._flush_pending_session_notifications(record.name)
         return {
             "session": record.name,
             "threadId": record.thread_id,
@@ -757,23 +921,53 @@ class AppServerRuntime:
         if not actor.active_turn_id:
             return {"interrupted": False, "reason": "idle"}
         turn_id = actor.active_turn_id
-        await self._require_client().rpc(
-            "turn/interrupt",
-            {"threadId": record.thread_id, "turnId": turn_id},
-        )
+        try:
+            await self._session_rpc(
+                name,
+                "turn/interrupt",
+                {"threadId": record.thread_id, "turnId": turn_id},
+                timeout=3.0,
+                overload_attempts=1,
+            )
+        except AppServerUnavailable:
+            return {
+                "interrupted": True,
+                "turnId": turn_id,
+                "settled": False,
+                "forcedRecovery": True,
+            }
         deadline = time.monotonic() + TURN_INTERRUPT_SETTLE_SECONDS
         while actor.active_turn_id == turn_id and time.monotonic() < deadline:
             await asyncio.sleep(0.02)
         if actor.active_turn_id == turn_id:
-            result = await self._require_client().rpc("thread/read", {"threadId": record.thread_id})
-            thread = result.get("thread") if isinstance(result, Mapping) else None
-            if isinstance(thread, Mapping):
-                actor.hydrate(thread)
-                self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+            try:
+                result = await self._session_rpc(
+                    name,
+                    "thread/read",
+                    {"threadId": record.thread_id},
+                    timeout=3.0,
+                    overload_attempts=1,
+                )
+                thread = result.get("thread") if isinstance(result, Mapping) else None
+                if isinstance(thread, Mapping):
+                    actor.hydrate(thread)
+                    self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+            except AppServerUnavailable:
+                pass
+        forced_recovery = actor.active_turn_id == turn_id
+        if forced_recovery:
+            client = self.session_clients.get(name)
+            if client is not None:
+                self.session_supervisor.request_restart(
+                    name,
+                    client,
+                    AppServerUnavailable("Codex turn did not settle after interrupt"),
+                )
         return {
             "interrupted": True,
             "turnId": turn_id,
-            "settled": actor.active_turn_id != turn_id,
+            "settled": not forced_recovery,
+            "forcedRecovery": forced_recovery,
         }
 
     async def _capture(self, name: str) -> dict[str, Any]:
@@ -814,7 +1008,7 @@ class AppServerRuntime:
         clean_thread_id = str(thread_id or "").strip()
         if not clean_thread_id or len(clean_thread_id) > 160 or "\x00" in clean_thread_id:
             raise AppServerRuntimeError("invalid Codex thread id")
-        result = await self._require_client().rpc(method, {"threadId": clean_thread_id})
+        result = await self._require_control_client().rpc(method, {"threadId": clean_thread_id})
         return {"ok": True, "result": result if isinstance(result, Mapping) else {}}
 
     async def _compat_rpc(self, method: str, params: dict[str, Any]) -> Any:
@@ -823,13 +1017,15 @@ class AppServerRuntime:
             raise AppServerRuntimeError("unsupported App Server compatibility request")
         if not isinstance(params, dict):
             raise AppServerRuntimeError("invalid App Server compatibility request")
-        return await self._require_client().rpc(selected_method, params)
+        return await self._require_control_client().rpc(selected_method, params)
 
     async def _thread_loaded(self, thread_id: str) -> bool:
         clean_thread_id = str(thread_id or "").strip()
         if not clean_thread_id:
             raise AppServerRuntimeError("Codex thread id is required")
-        result = await self._require_client().rpc("thread/read", {"threadId": clean_thread_id})
+        if self.registry.by_thread(clean_thread_id) is not None:
+            return True
+        result = await self._require_control_client().rpc("thread/read", {"threadId": clean_thread_id})
         thread = result.get("thread") if isinstance(result, Mapping) else None
         status = thread.get("status") if isinstance(thread, Mapping) else None
         if isinstance(status, Mapping):
@@ -853,24 +1049,45 @@ class AppServerRuntime:
                     raise AppServerRuntimeError("pending interaction could not be cancelled") from exc
                 await asyncio.sleep(0)
             interrupted = await self._interrupt(name)
-            if actor.active_turn_id:
+            if actor.active_turn_id and not interrupted.get("forcedRecovery"):
                 raise AppServerRuntimeError("Codex is still stopping; retry close in a moment")
         if any(entry[0] == name for entry in self.send_tasks.values()):
             raise AppServerRuntimeError("submitting Codex App Server sessions cannot be closed")
         if self.interactions.snapshot(name) is not None:
             raise AppServerRuntimeError("pending interactions must be resolved before closing")
-        unsubscribed = await self._require_client().rpc("thread/unsubscribe", {"threadId": record.thread_id})
+        client = self.session_clients.get(name)
+        unsubscribe_status = "unavailable"
+        if client is not None and client.ready:
+            try:
+                unsubscribed = await client.rpc(
+                    "thread/unsubscribe",
+                    {"threadId": record.thread_id},
+                    timeout=2.0,
+                    overload_attempts=1,
+                )
+                unsubscribe_status = str(unsubscribed.get("status") or "") if isinstance(unsubscribed, Mapping) else ""
+            except AppServerError:
+                pass
+        try:
+            await self.session_supervisor.stop_worker(
+                name,
+                record.worker_id,
+                client=client,
+            )
+        except AppServerUnavailable as exc:
+            raise AppServerRuntimeError("Codex App Server worker did not stop") from exc
         self._publish(record, ActorEvent("session.closed", payload={"session": name}))
         self.actors.pop(name, None)
         self.session_send_locks.pop(name, None)
+        self.pending_session_notifications.pop(name, None)
         self.registry.remove(name)
         return {
             "closed": True,
             "session": name,
             "threadId": record.thread_id,
             "interrupted": bool(interrupt and interrupted.get("interrupted")),
-            "unsubscribeStatus": str(unsubscribed.get("status") or "") if isinstance(unsubscribed, Mapping) else "",
-            "writerRelease": "delayed",
+            "unsubscribeStatus": unsubscribe_status,
+            "writerRelease": "immediate",
         }
 
     async def _respond_interaction(
@@ -905,7 +1122,7 @@ class AppServerRuntime:
                 interaction_id=interaction_id,
                 option_id=option_id,
                 action=action,
-                rpc=self._require_client().rpc,
+                rpc=lambda method, params: self._session_rpc(name, method, params),
             )
             if local is not None:
                 if timeline_event is not None:
@@ -994,7 +1211,7 @@ class AppServerRuntime:
                 cwd=record.cwd,
                 thread=actor.thread,
                 command=invocation,
-                rpc=self._require_client().rpc,
+                rpc=lambda method, params: self._session_rpc(name, method, params),
             )
         except Exception as exc:
             if timeline_event is not None:
@@ -1062,11 +1279,31 @@ class AppServerRuntime:
             ),
         )
 
-    def _require_client(self) -> AsyncCodexAppServerClient:
+    def _require_control_client(self) -> AsyncCodexAppServerClient:
         client = self.client
         if client is None or not client.ready:
-            raise AppServerUnavailable("Codex App Server is reconnecting")
+            raise AppServerUnavailable("Codex App Server control plane is reconnecting")
         return client
+
+    def _require_session_client(self, name: str) -> AsyncCodexAppServerClient:
+        return self.session_supervisor.client(name)
+
+    async def _session_rpc(
+        self,
+        name: str,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float | None = None,
+        overload_attempts: int = 3,
+    ) -> Any:
+        return await self.session_supervisor.rpc(
+            name,
+            method,
+            params,
+            timeout=timeout,
+            overload_attempts=overload_attempts,
+        )
 
     def _require_session(self, name: str) -> tuple[WebSessionRecord, WebSessionActor]:
         record = self.registry.get(name)
