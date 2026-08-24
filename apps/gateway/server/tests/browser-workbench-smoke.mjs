@@ -436,11 +436,15 @@ await withBrowser({
   }))()`);
   if (busyCloseSheet.title !== 'Interrupt and close'
     || !busyCloseSheet.body.includes('interrupts the current turn')
-    || !busyCloseSheet.action.includes('Interrupt and close')) {
+    || !busyCloseSheet.action.some((item) => item.startsWith('Interrupt and close'))) {
     throw new Error(`Busy App Server close confirmation is unsafe: ${JSON.stringify(busyCloseSheet)}`);
   }
   await evaluate("[...document.querySelectorAll('#modalChoices button')].find(item=>item.textContent.includes('Interrupt and close'))?.click()");
   for (let attempt = 0; attempt < 40 && closeRequests.length === 0; attempt += 1) await delay(25);
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    if (await evaluate("typeof actionBusy !== 'undefined' && !actionBusy")) break;
+    await delay(25);
+  }
   await page.unroute('**/txy/api/session/close');
   await evaluate("document.getElementById('faryoBusyCloseFixture')?.remove()");
   if (closeRequests.length !== 1 || closeRequests[0]?.session !== 'faryo99' || closeRequests[0]?.interrupt !== true) {
