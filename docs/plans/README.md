@@ -5,11 +5,13 @@
 
 ## Active
 
-- [`v1.11.11-error-contract-plan.md`](v1.11.11-error-contract-plan.md)：统一 Owner、Gateway 和
-  浏览器错误契约，提供稳定错误码、可重试语义、恢复建议和隐私安全翻译；归档占用冲突是
-  第一条端到端验收用例。
+当前无活动计划。
 
 ## Completed or maintenance mode
+
+- [`v1.11.11-error-contract-plan.md`](v1.11.11-error-contract-plan.md)：统一 Owner、Gateway 和
+  浏览器错误契约，提供稳定错误码、可重试语义、恢复建议和隐私安全翻译；真实归档占用冲突、
+  浏览器、部署和普通 reload 验收已完成。
 
 - [`v1.11.8-mobile-history-status-reliability-plan.md`](v1.11.8-mobile-history-status-reliability-plan.md)：
   以权威 TUI JSONL blocks 修复历史边界、问题导航和复制漂移；建立动态 footer footprint、
