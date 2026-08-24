@@ -19,19 +19,21 @@ Cookie、会话正文或本机目录。Faryo 对参考项目采用 clean-room �
 
 ## OpenAI App Server 的已确认能力
 
-本轮实现以 `codex-cli 0.149.0` 生成的 JSON Schema 为运行时基线。协议是版本化且仍在
+本轮实现以 `codex-cli 0.149.1` 生成的 JSON Schema 为运行时基线。协议是版本化且仍在
 演进的实验接口，不能把字段集合写死为永久不变的产品契约。
 
 已从官方 README、生成 schema 和官方源码确认：
 
 - App Server 使用双向 JSON-RPC；每条连接必须完成 `initialize` / `initialized`。
 - `thread/start`、`thread/resume` 和 `turn/start` 是正式会话路径。
+- 活动 regular turn 的追加输入使用带 `expectedTurnId` 的 `turn/steer`；不能用第二次
+  `turn/start` 冒充网页队列。
 - `item/agentMessage/delta` 提供回答正文增量；`item/completed` 提供同一 item 的最终值；
   `turn/completed` 提供终态和 token usage。
 - Unix socket transport 在一个长期进程中接受多个 WebSocket 连接；慢连接有有界队列并会
   被主动断开，不会无限积压内存。
 - 连接关闭只移除该连接的订阅和待处理 RPC；App Server 进程和活动线程不会随之退出。
-- 最后一个订阅者离开后，空闲线程会延迟卸载；活动 turn 可以继续执行。
+- 最后一个订阅者离开后，空闲线程会延迟 30 分钟卸载；活动 turn 可以继续执行。
 - 重连可以用 `thread/resume`、`thread/read`、`thread/turns/list` 和 `thread/items/list`
   恢复权威状态，但 App Server 不承诺为新连接重放断线期间的每个正文 delta。
 - 同一个持久 thread 只能由一个 App Server 进程持有写锁；另一个进程 resume 会失败。
@@ -106,8 +108,10 @@ Faryo 将同一思想落实为 `Codex App Server` 与 `Codex TUI (tmux)` 两种�
 - 现有 tmux/TUI 会话继续由 `Codex TUI (tmux)` 驱动；
 - 新会话默认由 `Codex App Server` 驱动，也可显式选择 TUI；
 - 两者共享历史入口和视觉组件，但不共享写权限；
-- 未证明线程已空闲、无草稿、无审批、无活动 turn 且原 writer 已释放前，禁止 handoff；
-- 第一阶段不提供自动双向 handoff，避免伪同步和 writer-lock 风险。
+- 未证明线程已空闲、无草稿、无审批、无活动 turn 且原 writer 已释放前，禁止启动第二个
+  独立 writer；
+- Codex 0.149.1 的 TUI `--remote unix://...` 可以在 Web actor 已关闭但 resident App Server
+  尚未卸载时复用同一 writer。Faryo 仅采用这种官方单 writer attach，不伪造 lock handoff。
 
 旧 registry/wire 值只在集中兼容适配层读取；领域代码使用
 `APP_SERVER`/`CODEX_TUI`，用户界面不显示旧协议名称。
@@ -139,7 +143,8 @@ DeepSeek Harness 的 command registry 进一步证明命令控制事件应由 se
   app shell，整体重写会扩大回归面。
 - 不把每个 token 写入 Faryo 数据库：它会制造第二份不可靠的历史真相并增加隐私面。
 - 不继续用 tmux 文本猜测来驱动新 Web 会话：终端捕获只保留给既有兼容会话。
-- 不在首次实施中承诺 TUI 与 Web 对同一 thread 同时在线；官方 writer-lock 语义不允许这样做。
+- 不让独立 TUI App Server 与 Faryo App Server 同时写同一 thread。TUI 的官方 `--remote`
+  模式只是连接现有 App Server，不是第二个 writer。
 
 ## 需要持续验证的上游变化
 
@@ -151,4 +156,5 @@ DeepSeek Harness 的 command registry 进一步证明命令控制事件应由 se
 4. 未知 server request 默认 fail closed，并向网页给出可理解的不可用状态；
 5. `item/agentMessage/delta` 与 `item/completed` 的 stable identity 收敛仍成立；
 6. 断开 Owner 后 turn 继续，重连后最终历史可恢复；
-7. App Server 与 TUI 双写尝试被明确拒绝，而不是静默覆盖。
+7. 独立 App Server 与 TUI 双写尝试被明确拒绝；resident writer 保留期内的 TUI resume
+   必须使用官方 `--remote` 复用同一 writer。

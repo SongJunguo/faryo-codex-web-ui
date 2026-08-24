@@ -429,6 +429,7 @@ class SessionLaunchService:
         cwd_override: Path | None = None,
         async_ready: bool = False,
         context_window_k: int = 0,
+        remote_app_server: bool = False,
     ) -> str:
         r = self.runtime
         clean_id = r.clean_agent_session_id(thread_id)
@@ -447,15 +448,21 @@ class SessionLaunchService:
             if not cwd.is_dir():
                 raise r.OwnerError("working directory selection is required", HTTPStatus.CONFLICT)
             starter = r.start_agent_runtime_async if async_ready else r.start_agent_runtime
-            return starter(
+            args = ["resume", "-C", str(cwd), clean_id]
+            if remote_app_server:
+                args = ["--remote", f"unix://{r.APP_SERVER_SOCKET}", *args]
+            session = starter(
                 config,
                 cwd,
                 "codex",
-                ["resume", "-C", str(cwd), clean_id],
+                args,
                 max_running,
                 agent_id=clean_id,
                 context_window_k=context_window_k,
             )
+            if remote_app_server:
+                r.tmux_session_option(config, session, "@faryo_codex_remote", "1")
+            return session
 
     def resume_agent_session(
         self,
@@ -467,6 +474,7 @@ class SessionLaunchService:
         cwd_override: Path | None = None,
         async_ready: bool = False,
         context_window_k: int = 0,
+        remote_app_server: bool = False,
     ) -> str:
         r = self.runtime
         if source == "codex-cli":
@@ -478,6 +486,7 @@ class SessionLaunchService:
                 cwd_override,
                 async_ready,
                 context_window_k,
+                remote_app_server,
             )
         raise r.OwnerError("unsupported agent source", HTTPStatus.BAD_REQUEST)
 

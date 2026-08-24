@@ -1931,7 +1931,7 @@ def web_agent_session_items(
             "tmuxSession": session,
             "active": True,
             "managed": True,
-            "agentRunning": lifecycle == "running",
+            "agentRunning": lifecycle in {"running", "waiting_for_approval", "waiting_for_input"},
             "state": state,
             "archived": False,
             "backend": session_backend.APP_SERVER.value,

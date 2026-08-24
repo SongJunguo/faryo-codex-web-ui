@@ -10,8 +10,8 @@ Faryo has two browser surfaces:
 
 1. **Gateway workbench** selects an active or resumable Codex session and applies
    the public authentication/routing boundary.
-2. **Owner session view** reads and controls one existing tmux-backed Codex
-   session without changing its terminal dimensions.
+2. **Owner session view** reads and controls one Codex App Server or tmux-backed
+   Codex session without changing terminal dimensions.
 
 The browser is a thin control surface. Durable conversation history belongs to
 Codex, live terminal state belongs to tmux, and runtime secrets stay below
@@ -89,9 +89,19 @@ threshold; it never rewrites the user's global Codex config. Directory
 navigation keeps the in-progress context choice.
 
 Backend selection happens before resume. If either an App Server actor or a TUI
-writer already owns the thread, Owner rejects the competing start atomically;
-Faryo never starts a second writer and then attempts cleanup. Protocol/storage
-compatibility values are mapped at one boundary and are not shown to users.
+writer already owns the thread, Owner rejects a competing independent writer
+atomically; Faryo never starts one and then attempts cleanup. Codex 0.149 keeps
+an unsubscribed App Server thread loaded for up to 30 minutes. During that
+window, a requested TUI resume connects through the official local `--remote`
+Unix endpoint and reuses the resident writer. This is one writer with another
+UI client, not an unsafe ownership bypass. Protocol/storage compatibility values
+are mapped at one boundary and are not shown to users.
+
+Close distinguishes idle and busy App Server sessions. Busy Close requires an
+explicit `Interrupt and close` confirmation, resolves a pending interaction,
+requests `turn/interrupt`, waits for the authoritative completed state, then
+unsubscribes. History is retained. Long failures wrap inside the sheet and are
+never truncated to a one-line ellipsis.
 
 Gateway route labels come from runtime configuration. Public browser requests
 never receive raw Owner tokens; Gateway injects them while proxying.
@@ -107,6 +117,9 @@ and then resume the independently collapsible Live panel.
 
 For Codex App Server sessions, private reasoning items do not become repeated
 `Working` messages. The active turn has one transient working/receiving status.
+New text submitted while that turn is active uses `turn/steer` with the exact
+active turn precondition and the browser message id; it never creates a second
+in-progress turn merely because the user sends another instruction.
 Each user message is a separate question-navigation target even if Codex keeps
 several messages inside one protocol turn. Commands, searches and edits form a
 new Activity card for each contiguous batch, so interim assistant output and

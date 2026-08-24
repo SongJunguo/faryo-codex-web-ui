@@ -115,8 +115,8 @@ Historical distribution and non-Codex platform paths may remain in the tree for
 upstream compatibility, but they are not part of this project's current validation
 or support claims.
 
-Current source line: **Faryo 1.11.6**. Latest tagged source release: **[Faryo
-1.10.3](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.10.3)**.
+Current source line: **Faryo 1.11.7**. Latest tagged source release: **[Faryo
+1.11.7](https://github.com/SongJunguo/faryo-codex-web-ui/releases/tag/v1.11.7)**.
 
 ## Current Functionality
 
@@ -124,6 +124,10 @@ Current source line: **Faryo 1.11.6**. Latest tagged source release: **[Faryo
 
 - Streams Codex App Server threads through `thread`, `turn`, and
   `item` lifecycle events, including agent-message deltas and final items.
+- Sends input received during an active turn through the official `turn/steer`
+  path instead of attempting a second turn. Busy Close is an explicit
+  interrupt-and-close action that waits for the turn to settle and retains the
+  Codex conversation history.
 - Renders App Server user, assistant and plan items as distinct keyed blocks.
   One live working/receiving state accompanies incremental answer text; empty
   reasoning placeholders are omitted. Each user message becomes its own
@@ -142,7 +146,10 @@ Current source line: **Faryo 1.11.6**. Latest tagged source release: **[Faryo
   reconnect to the independent App Server service and recover both conversation
   messages and bounded tool activity without inventing a second message database.
 - Keeps Codex TUI threads in tmux as a compatibility backend; tmux capture remains
-  conservative live evidence and never becomes a competing writer.
+  conservative live evidence and never becomes a competing writer. If the
+  resident App Server is still inside Codex's delayed writer-release window,
+  TUI resume uses the official local `--remote` endpoint to reuse that same
+  writer instead of racing it.
 - Keeps the initial payload to at most 12 recent complete question segments,
   then exposes older segments through a revision-bound cursor API. Formula-heavy answers cannot
   silently erase the complete question index.

@@ -213,9 +213,10 @@ class OwnerControlRoutes:
     async def _close(self, payload: dict[str, Any]) -> Response:
         session = str(payload.get("session") or "")
         if self.support.runtime.has_session(session):
+            interrupt = payload.get("interrupt") is True
             try:
                 result = await to_thread.run_sync(
-                    lambda: self.support.runtime.close_session(session),
+                    lambda: self.support.runtime.close_session(session, interrupt=interrupt),
                     abandon_on_cancel=True,
                 )
             except appserver_runtime.AppServerRuntimeError as exc:
@@ -276,6 +277,10 @@ class OwnerControlRoutes:
                         "this Codex thread is already owned by Codex App Server",
                         HTTPStatus.CONFLICT,
                     )
+                try:
+                    remote_app_server = self.support.runtime.thread_loaded(agent_session_id)
+                except appserver_runtime.AppServerRuntimeError:
+                    remote_app_server = False
                 return core.resume_agent_session(
                     self.support.config,
                     agent_session_id,
@@ -285,6 +290,7 @@ class OwnerControlRoutes:
                     selected_cwd,
                     True,
                     context_window_k,
+                    remote_app_server,
                 )
 
         session = await to_thread.run_sync(

@@ -257,6 +257,30 @@ class ProtocolTest(unittest.TestCase):
         actor.require_durable_activity()
         self.assertTrue(actor.snapshot()["durableActivityRequired"])
 
+    def test_authoritative_hydration_clears_a_stale_active_turn(self) -> None:
+        actor = WebSessionActor(session_id="session_demo", thread_id="thread_demo")
+        actor.hydrate({
+            "id": "thread_demo",
+            "status": {"type": "active", "activeFlags": []},
+            "turns": [
+                {"id": "turn_old", "status": "inProgress", "items": []},
+                {"id": "turn_new", "status": "inProgress", "items": []},
+            ],
+        })
+        self.assertEqual(actor.active_turn_id, "turn_new")
+        self.assertEqual(actor.lifecycle, "running")
+
+        actor.hydrate({
+            "id": "thread_demo",
+            "status": "idle",
+            "turns": [
+                {"id": "turn_old", "status": "interrupted", "items": []},
+                {"id": "turn_new", "status": "interrupted", "items": []},
+            ],
+        })
+        self.assertIsNone(actor.active_turn_id)
+        self.assertEqual(actor.lifecycle, "idle")
+
     def test_event_journal_replay_gap_reset_and_byte_bound(self) -> None:
         journal = EventJournal(max_events=3, max_bytes=800, epoch="epoch")
         first = journal.publish(session_id="s", thread_id="t", kind="one", payload={"n": 1})

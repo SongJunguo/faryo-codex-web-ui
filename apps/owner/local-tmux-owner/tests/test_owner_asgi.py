@@ -47,6 +47,7 @@ class FakeRuntime:
         self.sent = []
         self.resumed = []
         self.detail_items = []
+        self.loaded_threads = set()
 
     def start(self):
         self.started = True
@@ -59,6 +60,9 @@ class FakeRuntime:
 
     def has_thread(self, thread_id):
         return self.registry.by_thread(thread_id) is not None
+
+    def thread_loaded(self, thread_id):
+        return thread_id in self.loaded_threads
 
     def start_session(self, **_values):
         self.sessions.add("faryo1")
@@ -464,6 +468,27 @@ class OwnerAsgiTest(unittest.TestCase):
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["session"], "faryo3")
         self.assertEqual(resume.call_args.args[2], "codex-cli")
+
+    def test_resume_uses_remote_tui_while_resident_app_server_releases_writer(self) -> None:
+        self.runtime.loaded_threads.add("thread_switch_tui")
+        with (
+            mock.patch.object(server, "codex_resume_directory_requirement", return_value=None),
+            mock.patch.object(server, "resume_agent_session", return_value="faryo3") as resume,
+            mock.patch.object(server, "agent_session_lifecycle", return_value=("starting", False)),
+        ):
+            status, _headers, body = self.request(
+                "POST",
+                "/api/agent/resume",
+                {
+                    "agent_session_id": "thread_switch_tui",
+                    "source": "codex-app-server",
+                    "backend": "terminal-managed",
+                },
+                token=True,
+            )
+
+        self.assertEqual(status, 200, body)
+        self.assertTrue(resume.call_args.args[-1])
 
     def test_new_tui_launch_reserves_existing_app_server_session_names(self) -> None:
         self.runtime.sessions.add("faryo4")

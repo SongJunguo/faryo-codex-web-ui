@@ -594,6 +594,13 @@ main {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+#modalBody {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 .choice-list {
   min-height: 0;
   overflow-y: auto;

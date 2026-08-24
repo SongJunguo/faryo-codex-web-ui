@@ -766,12 +766,17 @@ class WebSessionActor:
         return [(str(block["role"]), str(block["text"])) for block in self.message_blocks()]
 
     def hydrate(self, thread: Mapping[str, Any], turns: list[Mapping[str, Any]] | None = None) -> None:
+        thread_lifecycle = self.lifecycle
         if thread.get("id") == self.thread_id:
             self.thread = dict(thread)
-            self.lifecycle = self._thread_status(thread.get("status"))
+            thread_lifecycle = self._thread_status(thread.get("status"))
+            self.lifecycle = thread_lifecycle
         source_turns = turns if turns is not None else thread.get("turns")
         if not isinstance(source_turns, list):
+            if thread_lifecycle in {"idle", "interrupted", "failed", "unloaded"}:
+                self.active_turn_id = None
             return
+        active_turn_id: str | None = None
         for turn in source_turns:
             if not isinstance(turn, Mapping) or not isinstance(turn.get("id"), str):
                 continue
@@ -784,8 +789,13 @@ class WebSessionActor:
                         self._item_completed({"threadId": self.thread_id, "turnId": turn_id, "item": item})
             status = str(turn.get("status") or "")
             if status in {"inProgress", "in_progress", "active"}:
-                self.active_turn_id = turn_id
-                self.lifecycle = "running"
+                active_turn_id = turn_id
+        if active_turn_id:
+            self.active_turn_id = active_turn_id
+            self.lifecycle = "running"
+        elif thread_lifecycle != "running":
+            self.active_turn_id = None
+            self.lifecycle = thread_lifecycle
 
     def _event(
         self,

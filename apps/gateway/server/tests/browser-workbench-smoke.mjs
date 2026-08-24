@@ -385,6 +385,68 @@ await withBrowser({
   await evaluate(`(() => {[...document.querySelectorAll('#modalActions button')].find(item=>item.textContent==='Cancel')?.click();document.getElementById('faryoArchiveFixtureCard')?.remove();})()`);
   await delay(20);
 
+  const longErrorText = 'active Codex App Server sessions must be interrupted before closing because the current turn is still running';
+  await evaluate(`(() => {void notice('Action failed', ${JSON.stringify(longErrorText)});})()`);
+  await delay(20);
+  const wrappedError = await evaluate(`(() => {
+    const body = document.getElementById('modalBody');
+    const sheet = document.querySelector('#modal .sheet');
+    const bodyStyle = body ? getComputedStyle(body) : null;
+    const lineHeight = Number.parseFloat(bodyStyle?.lineHeight || '0');
+    return {
+      open: document.getElementById('modal')?.classList.contains('open') || false,
+      fullText: body?.textContent || '',
+      whiteSpace: bodyStyle?.whiteSpace || '',
+      wraps: Boolean(body && lineHeight > 0 && body.getBoundingClientRect().height > lineHeight * 1.5),
+      fits: Boolean(sheet && sheet.scrollWidth <= sheet.clientWidth + 1),
+    };
+  })()`);
+  if (!wrappedError.open || wrappedError.fullText !== longErrorText
+    || wrappedError.whiteSpace === 'nowrap' || !wrappedError.wraps || !wrappedError.fits) {
+    throw new Error(`Long action error did not wrap completely: ${JSON.stringify(wrappedError)}`);
+  }
+  await evaluate("[...document.querySelectorAll('#modalChoices button')].find(item=>item.textContent==='OK')?.click()");
+
+  const closeRequests = [];
+  await page.route('**/txy/api/session/close', async (route) => {
+    closeRequests.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, closed: true, interrupted: true, writerRelease: 'delayed' }),
+    });
+  });
+  await evaluate(`(() => {
+    const fixture = document.createElement('div');
+    fixture.id = 'faryoBusyCloseFixture';
+    fixture.hidden = true;
+    document.body.appendChild(fixture);
+    const card = window.__faryoRenderSessionFixture({
+      id: 'anonymous-busy-thread', tmuxSession: 'faryo99', title: 'Anonymous busy fixture',
+      route: 'txy', routeLabel: 'Workstation', source: 'codex-app-server', backend: 'web-managed',
+      state: 'running', agentRunning: true, managed: true, updatedTs: 1,
+    }, fixture);
+    card.querySelector('.close-session')?.click();
+  })()`);
+  await delay(20);
+  const busyCloseSheet = await evaluate(`(() => ({
+    title: document.getElementById('modalTitle')?.textContent || '',
+    body: document.getElementById('modalBody')?.textContent || '',
+    action: [...document.querySelectorAll('#modalChoices button')].map(item => item.textContent.trim()),
+  }))()`);
+  if (busyCloseSheet.title !== 'Interrupt and close'
+    || !busyCloseSheet.body.includes('interrupts the current turn')
+    || !busyCloseSheet.action.includes('Interrupt and close')) {
+    throw new Error(`Busy App Server close confirmation is unsafe: ${JSON.stringify(busyCloseSheet)}`);
+  }
+  await evaluate("[...document.querySelectorAll('#modalChoices button')].find(item=>item.textContent.includes('Interrupt and close'))?.click()");
+  for (let attempt = 0; attempt < 40 && closeRequests.length === 0; attempt += 1) await delay(25);
+  await page.unroute('**/txy/api/session/close');
+  await evaluate("document.getElementById('faryoBusyCloseFixture')?.remove()");
+  if (closeRequests.length !== 1 || closeRequests[0]?.session !== 'faryo99' || closeRequests[0]?.interrupt !== true) {
+    throw new Error(`Busy App Server close did not opt into interrupt: ${JSON.stringify(closeRequests)}`);
+  }
+
   await evaluate("document.getElementById('securityActivity').click()");
   let activityPanel = {};
   for (let attempt = 0; attempt < 100; attempt += 1) {

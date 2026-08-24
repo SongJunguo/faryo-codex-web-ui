@@ -562,6 +562,26 @@ class AgentSessionTest(unittest.TestCase):
         self.assertEqual(items[0]["tmuxSession"], "faryo1")
         self.assertIn("thread-exited", excluded)
 
+    def test_app_server_pending_interaction_remains_interruptible_from_home(self):
+        runtime = mock.Mock()
+        runtime.session_records.return_value = [
+            {
+                "session": "faryo1",
+                "threadId": "thread-pending",
+                "cwd": "/workspace/project",
+                "updatedAt": 100,
+                "createdAt": 90,
+            }
+        ]
+        runtime.capture.return_value = {
+            "snapshot": {"lifecycle": "waiting_for_approval"},
+        }
+        with mock.patch.object(server, "session_git_label", return_value=""):
+            items = server.web_agent_session_items(runtime)
+
+        self.assertEqual(items[0]["state"], "pending_interaction")
+        self.assertTrue(items[0]["agentRunning"])
+
     def test_agent_start_timeout_removes_the_empty_tmux(self):
         completed = server.subprocess.CompletedProcess(["tmux"], 0, "", "")
         with (
@@ -634,6 +654,36 @@ class AgentSessionTest(unittest.TestCase):
         self.assertEqual(selected, args[1])
         self.assertEqual(["resume", "-C", str(selected), "thread-a"], args[3])
         self.assertEqual(start.call_args.kwargs["context_window_k"], 1000)
+
+    def test_tui_resume_reuses_the_resident_app_server_writer(self):
+        with tempfile.TemporaryDirectory() as root:
+            selected = Path(root)
+            thread = {"id": "thread-a", "cwd": str(selected)}
+            with (
+                mock.patch.object(server, "active_codex_thread_map", return_value={}),
+                mock.patch.object(server, "codex_thread_by_id", return_value=thread),
+                mock.patch.object(server, "start_agent_runtime", return_value="faryo7") as start,
+                mock.patch.object(server, "tmux_session_option") as option,
+            ):
+                session = server.resume_codex_thread_session(
+                    self.config,
+                    "thread-a",
+                    remote_app_server=True,
+                )
+
+        self.assertEqual(session, "faryo7")
+        self.assertEqual(
+            start.call_args.args[3],
+            [
+                "--remote",
+                f"unix://{server.APP_SERVER_SOCKET}",
+                "resume",
+                "-C",
+                str(selected),
+                "thread-a",
+            ],
+        )
+        option.assert_called_with(self.config, "faryo7", "@faryo_codex_remote", "1")
 
     def test_workspace_history_scope_hides_unmapped_desktop_agent(self):
         with (

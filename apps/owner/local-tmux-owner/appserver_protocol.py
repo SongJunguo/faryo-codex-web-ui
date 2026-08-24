@@ -21,6 +21,7 @@ REQUIRED_REQUEST_METHODS = frozenset({
     "thread/start",
     "turn/interrupt",
     "turn/start",
+    "turn/steer",
 })
 REQUIRED_NOTIFICATION_METHODS = frozenset({
     "item/agentMessage/delta",

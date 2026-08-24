@@ -263,7 +263,17 @@ const workbenchRenderer = preactFactory({
         if (action === "close") {
           event.preventDefault();
           event.stopPropagation();
-          await closeSession(item.route, item.tmuxSession || "");
+          await closeSession(item.route, item.tmuxSession || "", {
+            appServer:
+              sessionBackendKey(item.backend, item.source) ===
+              SESSION_BACKEND.APP_SERVER.key,
+            running: Boolean(
+              item.agentRunning ||
+              ["running", "pending_interaction"].includes(
+                String(item.state || ""),
+              ),
+            ),
+          });
           return;
         }
         if (action === "archive" || action === "restore") {
@@ -1642,11 +1652,24 @@ async function resumeSession(
   location.href =
     data.redirect || `/${route}/?session=${encodeURIComponent(data.session)}`;
 }
-async function closeSession(route, session) {
+async function closeSession(route, session, options = {}) {
+  const interrupt = Boolean(options.appServer && options.running),
+    body = interrupt
+      ? "Codex is still working. This interrupts the current turn and closes the Faryo session; conversation history is retained."
+      : options.appServer
+        ? "This closes the Faryo web session and retains conversation history. Codex may keep the thread writer for up to 30 minutes, so choose App Server if you resume it immediately."
+        : "This closes the running tmux session. Conversation history is retained.";
   const ok = await sheet(
-    "Close Session",
-    "This closes the running session. Busy sessions may refuse to close.",
-    [{ label: "Close Session", meta: session, value: "ok", danger: true }],
+    interrupt ? "Interrupt and close" : "Close Session",
+    body,
+    [
+      {
+        label: interrupt ? "Interrupt and close" : "Close Session",
+        meta: session,
+        value: "ok",
+        danger: true,
+      },
+    ],
   );
   if (ok !== "ok") return;
   await fetchJson(
@@ -1654,7 +1677,7 @@ async function closeSession(route, session) {
     {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(await csrfHeaders()) },
-      body: JSON.stringify({ session }),
+      body: JSON.stringify({ session, interrupt }),
     },
     "Close session",
   );

@@ -43,6 +43,7 @@ CLIENT_MESSAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
 SEND_RECEIPT_TTL_SECONDS = 48 * 60 * 60
 SEND_ACK_WAIT_SECONDS = 0.35
 DELTA_PUBLISH_INTERVAL_SECONDS = 0.04
+TURN_INTERRUPT_SETTLE_SECONDS = 1.0
 
 
 class AppServerRuntimeError(RuntimeError):
@@ -88,6 +89,7 @@ class AppServerRuntime:
         self.rate_limits: dict[str, Any] = {}
         self.ignored_notifications: dict[str, int] = {}
         self.send_tasks: dict[str, tuple[str, str, asyncio.Task[dict[str, Any]]]] = {}
+        self.session_send_locks: dict[str, asyncio.Lock] = {}
         self.send_receipts: dict[str, dict[str, Any]] = {}
         self.command_receipts: dict[str, dict[str, Any]] = {}
         self.pending_delta_events: dict[tuple[str, str], tuple[WebSessionRecord, ActorEvent]] = {}
@@ -159,6 +161,9 @@ class AppServerRuntime:
     def has_thread(self, thread_id: str) -> bool:
         return self.registry.by_thread(thread_id) is not None
 
+    def thread_loaded(self, thread_id: str, timeout: float = RUNTIME_CALL_TIMEOUT) -> bool:
+        return self._submit(self._thread_loaded(thread_id), timeout)
+
     def session_records(self) -> list[dict[str, Any]]:
         return [record.public() for record in sorted(self.registry.values(), key=lambda item: item.updated_at, reverse=True)]
 
@@ -200,8 +205,14 @@ class AppServerRuntime:
     def interrupt(self, name: str, timeout: float = RUNTIME_CALL_TIMEOUT) -> dict[str, Any]:
         return self._submit(self._interrupt(name), timeout)
 
-    def close_session(self, name: str, timeout: float = RUNTIME_CALL_TIMEOUT) -> dict[str, Any]:
-        return self._submit(self._close_session(name), timeout)
+    def close_session(
+        self,
+        name: str,
+        *,
+        interrupt: bool = False,
+        timeout: float = RUNTIME_CALL_TIMEOUT,
+    ) -> dict[str, Any]:
+        return self._submit(self._close_session(name, interrupt=interrupt), timeout)
 
     def respond_interaction(
         self,
@@ -547,7 +558,7 @@ class AppServerRuntime:
             )
         else:
             task = asyncio.create_task(
-                self._perform_send(record, value, client_message_id),
+                self._perform_send(record, actor, value, client_message_id),
                 name=f"faryo-send-{client_message_id[:24]}",
             )
             self.send_tasks[client_message_id] = (name, digest, task)
@@ -570,21 +581,35 @@ class AppServerRuntime:
     async def _perform_send(
         self,
         record: WebSessionRecord,
+        actor: WebSessionActor,
         text: str,
         client_message_id: str,
     ) -> dict[str, Any]:
-        result = await self._require_client().rpc(
-            "turn/start",
-            {
+        lock = self.session_send_locks.setdefault(record.name, asyncio.Lock())
+        async with lock:
+            active_turn_id = actor.active_turn_id
+            params: dict[str, Any] = {
                 "threadId": record.thread_id,
                 "input": [{"type": "text", "text": text}],
                 "clientUserMessageId": client_message_id,
-            },
-        )
-        turn = result.get("turn") if isinstance(result, dict) else None
-        turn_id = str(turn.get("id") or "") if isinstance(turn, Mapping) else ""
+            }
+            if active_turn_id:
+                params["expectedTurnId"] = active_turn_id
+                result = await self._require_client().rpc("turn/steer", params)
+                turn_id = str(result.get("turnId") or "") if isinstance(result, Mapping) else ""
+                delivery_state = "steered"
+            else:
+                result = await self._require_client().rpc("turn/start", params)
+                turn = result.get("turn") if isinstance(result, dict) else None
+                turn_id = str(turn.get("id") or "") if isinstance(turn, Mapping) else ""
+                delivery_state = "submitted"
         self.registry.touch(record.name)
-        return self._delivery_receipt(record.name, client_message_id, turn_id)
+        return self._delivery_receipt(
+            record.name,
+            client_message_id,
+            turn_id,
+            delivery_state=delivery_state,
+        )
 
     @staticmethod
     def _delivery_receipt(
@@ -702,11 +727,25 @@ class AppServerRuntime:
         record, actor = self._require_session(name)
         if not actor.active_turn_id:
             return {"interrupted": False, "reason": "idle"}
+        turn_id = actor.active_turn_id
         await self._require_client().rpc(
             "turn/interrupt",
-            {"threadId": record.thread_id, "turnId": actor.active_turn_id},
+            {"threadId": record.thread_id, "turnId": turn_id},
         )
-        return {"interrupted": True, "turnId": actor.active_turn_id}
+        deadline = time.monotonic() + TURN_INTERRUPT_SETTLE_SECONDS
+        while actor.active_turn_id == turn_id and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        if actor.active_turn_id == turn_id:
+            result = await self._require_client().rpc("thread/read", {"threadId": record.thread_id})
+            thread = result.get("thread") if isinstance(result, Mapping) else None
+            if isinstance(thread, Mapping):
+                actor.hydrate(thread)
+                self._publish(record, ActorEvent("session.snapshot", payload=actor.snapshot()))
+        return {
+            "interrupted": True,
+            "turnId": turn_id,
+            "settled": actor.active_turn_id != turn_id,
+        }
 
     async def _capture(self, name: str) -> dict[str, Any]:
         record, actor = self._require_session(name)
@@ -749,19 +788,53 @@ class AppServerRuntime:
         result = await self._require_client().rpc(method, {"threadId": clean_thread_id})
         return {"ok": True, "result": result if isinstance(result, Mapping) else {}}
 
-    async def _close_session(self, name: str) -> dict[str, Any]:
+    async def _thread_loaded(self, thread_id: str) -> bool:
+        clean_thread_id = str(thread_id or "").strip()
+        if not clean_thread_id:
+            raise AppServerRuntimeError("Codex thread id is required")
+        result = await self._require_client().rpc("thread/read", {"threadId": clean_thread_id})
+        thread = result.get("thread") if isinstance(result, Mapping) else None
+        status = thread.get("status") if isinstance(thread, Mapping) else None
+        if isinstance(status, Mapping):
+            status = status.get("type")
+        return str(status or "") not in {"", "notLoaded", "unloaded"}
+
+    async def _close_session(self, name: str, *, interrupt: bool = False) -> dict[str, Any]:
         record, actor = self._require_session(name)
+        interrupted: dict[str, Any] = {"interrupted": False}
         if actor.active_turn_id:
-            raise AppServerRuntimeError("active Codex App Server sessions must be interrupted before closing")
+            if not interrupt:
+                raise AppServerRuntimeError("active Codex App Server sessions must be interrupted before closing")
+            pending = self.interactions.snapshot(name)
+            if pending is not None:
+                try:
+                    self.interactions.cancel(
+                        name,
+                        client_request_id=f"close_{time.time_ns()}",
+                    )
+                except AppServerInteractionError as exc:
+                    raise AppServerRuntimeError("pending interaction could not be cancelled") from exc
+                await asyncio.sleep(0)
+            interrupted = await self._interrupt(name)
+            if actor.active_turn_id:
+                raise AppServerRuntimeError("Codex is still stopping; retry close in a moment")
         if any(entry[0] == name for entry in self.send_tasks.values()):
             raise AppServerRuntimeError("submitting Codex App Server sessions cannot be closed")
         if self.interactions.snapshot(name) is not None:
             raise AppServerRuntimeError("pending interactions must be resolved before closing")
-        await self._require_client().rpc("thread/unsubscribe", {"threadId": record.thread_id})
+        unsubscribed = await self._require_client().rpc("thread/unsubscribe", {"threadId": record.thread_id})
         self._publish(record, ActorEvent("session.closed", payload={"session": name}))
         self.actors.pop(name, None)
+        self.session_send_locks.pop(name, None)
         self.registry.remove(name)
-        return {"closed": True, "session": name, "threadId": record.thread_id}
+        return {
+            "closed": True,
+            "session": name,
+            "threadId": record.thread_id,
+            "interrupted": bool(interrupt and interrupted.get("interrupted")),
+            "unsubscribeStatus": str(unsubscribed.get("status") or "") if isinstance(unsubscribed, Mapping) else "",
+            "writerRelease": "delayed",
+        }
 
     async def _respond_interaction(
         self,

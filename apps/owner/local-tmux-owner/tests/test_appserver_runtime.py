@@ -27,6 +27,7 @@ class FakeRuntimeClient:
         self.server_handlers = {}
         self.server_results = []
         self.turn_start_calls = 0
+        self.turn_steer_calls = 0
         self.rpc_calls = []
 
     def register_server_request(self, method, handler):
@@ -173,8 +174,24 @@ class FakeRuntimeClient:
                 },
             )
             return {"turn": {"id": turn_id, "items": [], "status": "inProgress"}}
+        if method == "turn/steer":
+            self.turn_steer_calls += 1
+            return {"turnId": params["expectedTurnId"]}
         if method == "turn/interrupt":
+            await self.notification(
+                "turn/completed",
+                {
+                    "threadId": params["threadId"],
+                    "turn": {
+                        "id": params["turnId"],
+                        "items": [],
+                        "status": "interrupted",
+                    },
+                },
+            )
             return {}
+        if method == "thread/read":
+            return {"thread": {"id": params["threadId"], "turns": [], "status": "idle"}}
         if method == "thread/unsubscribe":
             return {"status": "unsubscribed"}
         if method in {"thread/archive", "thread/unarchive"}:
@@ -276,6 +293,55 @@ class RuntimeTest(unittest.TestCase):
         self.assertEqual(len(clients), 1)
         self.assertTrue(lifecycle["ok"])
         self.assertEqual(lifecycle["result"]["threadId"], started["threadId"])
+
+    def test_active_turn_send_steers_and_explicit_close_interrupts(self) -> None:
+        clients = []
+
+        def factory(notification, disconnected):
+            client = FakeRuntimeClient(notification, disconnected)
+            clients.append(client)
+            return client
+
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = AppServerRuntime(
+                socket_path=root / "app.sock",
+                registry_path=root / "registry.json",
+                client_version="test",
+                client_factory=factory,
+            )
+            runtime.start()
+            self.assertTrue(runtime.wait_ready(2))
+            session = runtime.start_session(cwd="/workspace")["session"]
+            actor = runtime.actors[session]
+            runtime.loop.call_soon_threadsafe(
+                actor.apply,
+                "turn/started",
+                {
+                    "threadId": actor.thread_id,
+                    "turn": {"id": "turn_active", "items": [], "status": "inProgress"},
+                },
+            )
+            deadline = time.monotonic() + 1
+            while runtime.capture(session)["snapshot"]["activeTurnId"] != "turn_active":
+                if time.monotonic() >= deadline:
+                    raise AssertionError("active turn did not settle")
+                time.sleep(0.01)
+
+            steered = runtime.send(session, "Steer now", "client_steer_1")
+            with self.assertRaisesRegex(RuntimeError, "must be interrupted"):
+                runtime.close_session(session)
+            closed = runtime.close_session(session, interrupt=True)
+            runtime.stop()
+
+        self.assertEqual(steered["deliveryState"], "steered")
+        self.assertEqual(steered["turnId"], "turn_active")
+        self.assertEqual(clients[0].turn_start_calls, 0)
+        self.assertEqual(clients[0].turn_steer_calls, 1)
+        self.assertTrue(closed["closed"])
+        self.assertTrue(closed["interrupted"])
+        self.assertEqual(closed["unsubscribeStatus"], "unsubscribed")
+        self.assertEqual(closed["writerRelease"], "delayed")
 
     def test_runtime_reassigns_persisted_names_that_now_belong_to_tmux(self) -> None:
         clients = []
