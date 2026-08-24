@@ -3,6 +3,8 @@ import { withBrowser } from "../../../../tools/browser-harness/playwright.mjs";
 const targetUrl = process.env.FARYO_SMOKE_URL || "";
 const chromeBin = process.env.CHROME_BIN || "/usr/bin/google-chrome";
 if (!targetUrl) throw new Error("FARYO_SMOKE_URL is required");
+const targetSession =
+  new URL(targetUrl).searchParams.get("session") || "faryo1";
 
 const questionKey = "anonymous-jsonl-question";
 const quotedTui = [
@@ -68,9 +70,15 @@ await withBrowser(
   },
   async ({ page }) => {
     const pageErrors = [];
+    const apiRequests = new Map();
     page.on("pageerror", (error) =>
       pageErrors.push(String(error?.message || error)),
     );
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (!pathname.startsWith("/api/")) return;
+      apiRequests.set(pathname, (apiRequests.get(pathname) || 0) + 1);
+    });
     await page.route("**/api/capture**", (route) =>
       route.fulfill({
         status: 200,
@@ -91,7 +99,7 @@ await withBrowser(
         contentType: "application/json",
         body: JSON.stringify({
           ok: true,
-          session: "faryo1",
+          session: targetSession,
           sessionId: capture.sessionId,
           sessionTitle: capture.sessionTitle,
           ownerLabel: "Workstation",
@@ -144,17 +152,35 @@ await withBrowser(
     );
 
     await page.goto(targetUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(
-      () =>
-        document.documentElement.dataset.faryoAppReady === "1" &&
-        document.querySelectorAll("#output > .compact-block.user").length ===
-          1 &&
-        document.querySelectorAll("#output > .compact-block.output").length ===
-          1 &&
-        document.querySelector("#output > .compact-block.user .katex"),
-      null,
-      { timeout: 20_000 },
-    );
+    try {
+      await page.waitForFunction(
+        () =>
+          document.documentElement.dataset.faryoAppReady === "1" &&
+          document.querySelectorAll("#output > .compact-block.user").length ===
+            1 &&
+          document.querySelectorAll("#output > .compact-block.output")
+            .length === 1 &&
+          document.querySelector("#output > .compact-block.user .katex"),
+        null,
+        { timeout: 20_000 },
+      );
+    } catch (error) {
+      const diagnostic = await page.evaluate(() => ({
+        ready: document.documentElement.dataset.faryoAppReady || "",
+        title: document.title,
+        userBlocks: document.querySelectorAll("#output > .compact-block.user")
+          .length,
+        outputBlocks: document.querySelectorAll(
+          "#output > .compact-block.output",
+        ).length,
+        katex: document.querySelectorAll("#output .katex").length,
+        notice: document.getElementById("transcriptNotice")?.textContent || "",
+      }));
+      throw new Error(
+        `TUI history fixture did not settle: ${JSON.stringify({ diagnostic, pageErrors, apiRequests: Object.fromEntries(apiRequests) })}`,
+        { cause: error },
+      );
+    }
 
     const state = await page.evaluate(() => {
       const user = document.querySelector("#output > .compact-block.user");

@@ -16,6 +16,7 @@ const chromeBin = process.env.CHROME_BIN || "/usr/bin/google-chrome";
 
 for (const viewport of [
   { width: 390, height: 844 },
+  { width: 432, height: 900 },
   { width: 1280, height: 800 },
 ]) {
   await withBrowser(
